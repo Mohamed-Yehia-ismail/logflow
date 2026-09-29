@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Builds LogFlow (if needed) and runs it.
+# Usage: ./logflow <log-file>
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+make -s -C "$ROOT" >&2
+exec "$ROOT/build/logflow" "$@"
