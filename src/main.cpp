@@ -8,6 +8,7 @@
 #include "logflow/core/Pipeline.hpp"
 #include "logflow/io/ConsoleSink.hpp"
 #include "logflow/io/FileLineSource.hpp"
+#include "logflow/stages/ParserStage.hpp"
 
 int main(int argc, char* argv[]) {
     if (argc != 2) {
@@ -17,7 +18,8 @@ int main(int argc, char* argv[]) {
 
     try {
         logflow::Pipeline pipeline(std::make_unique<logflow::FileLineSource>(argv[1]));
-        pipeline.setSink(std::make_unique<logflow::ConsoleSink>());
+        pipeline.addStage(std::make_unique<logflow::ParserStage>())
+            .setSink(std::make_unique<logflow::ConsoleSink>());
 
         pipeline.run();
     } catch (const std::exception& e) {

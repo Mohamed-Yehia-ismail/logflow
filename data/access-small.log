@@ -18,6 +18,7 @@
 198.51.100.23 - - [01/Sep/2026:08:13:38 +0000] "GET /robots.txt HTTP/1.1" 200 4363 "https://www.example.com/products" "curl/8.7.1"
 192.0.2.24 - - [01/Sep/2026:08:14:38 +0000] "GET /images/logo.png HTTP/1.1" 200 36456 "-" "Googlebot/2.1 (+http://www.google.com/bot.html)"
 192.0.2.30 - - [01/Sep/2026:08:15:47 +0000] "GET /checkout HTTP/1.1" 200 19434 "https://www.example.com/products" "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
+
 198.51.100.13 - - [01/Sep/2026:08:15:48 +0000] "GET /checkout HTTP/1.1" 404 33471 "-" "python-requests/2.32.3"
 192.0.2.30 - - [01/Sep/2026:08:17:10 +0000] "GET /images/logo.png HTTP/1.1" 301 10216 "https://www.example.com/" "curl/8.7.1"
 192.0.2.12 - - [01/Sep/2026:08:18:18 +0000] "GET / HTTP/1.1" 304 0 "https://www.example.com/products" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36"
@@ -53,6 +54,7 @@
 203.0.113.56 - - [01/Sep/2026:08:44:09 +0000] "GET /products HTTP/1.1" 301 17367 "-" "curl/8.7.1"
 203.0.113.69 - - [01/Sep/2026:08:45:04 +0000] "GET /favicon.ico HTTP/1.1" 200 5131 "-" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36"
 192.0.2.26 - - [01/Sep/2026:08:45:52 +0000] "GET /search?q=shoes HTTP/1.1" 304 0 "https://www.example.com/products" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36"
+192.0.2.14 - - [01/Sep/2026:08:41:07 +0000] "GET /index.html HTTP/1.1" 200
 192.0.2.36 - - [01/Sep/2026:08:46:32 +0000] "GET /api/v1/users HTTP/1.1" 500 2814 "https://www.example.com/" "Googlebot/2.1 (+http://www.google.com/bot.html)"
 192.0.2.29 - - [01/Sep/2026:08:47:04 +0000] "GET /robots.txt HTTP/1.1" 200 36892 "https://www.example.com/products" "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15"
 198.51.100.17 - - [01/Sep/2026:08:47:25 +0000] "GET /products/42 HTTP/1.1" 500 1824 "-" "python-requests/2.32.3"
@@ -88,6 +90,7 @@
 203.0.113.50 - - [01/Sep/2026:09:16:21 +0000] "GET /static/css/main.css HTTP/1.1" 503 40980 "-" "curl/8.7.1"
 192.0.2.27 - - [01/Sep/2026:09:17:34 +0000] "GET /robots.txt HTTP/1.1" 200 42323 "https://www.example.com/products" "python-requests/2.32.3"
 192.0.2.37 - - [01/Sep/2026:09:18:34 +0000] "GET /products/42 HTTP/1.1" 200 25044 "https://www.example.com/" "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
+198.51.100.7 - - [31/Sep/2026:09:12:44 +0000] "GET /about HTTP/1.1" 200 5120 "-" "curl/8.7.1"
 203.0.113.53 - - [01/Sep/2026:09:19:16 +0000] "GET /logout HTTP/1.1" 404 25046 "https://www.example.com/" "Mozilla/5.0 (X11; Linux x86_64; rv:129.0) Gecko/20100101 Firefox/129.0"
 198.51.100.19 - - [01/Sep/2026:09:19:27 +0000] "GET /static/js/app.js HTTP/1.1" 200 35551 "-" "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15"
 192.0.2.13 - - [01/Sep/2026:09:20:51 +0000] "GET /about HTTP/1.1" 404 42913 "-" "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15"
@@ -118,6 +121,7 @@
 192.0.2.20 - - [01/Sep/2026:09:42:44 +0000] "GET /robots.txt HTTP/1.1" 200 9977 "https://www.example.com/" "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15"
 203.0.113.66 - - [01/Sep/2026:09:43:00 +0000] "GET /favicon.ico HTTP/1.1" 404 39935 "-" "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
 198.51.100.14 - - [01/Sep/2026:09:43:58 +0000] "GET /static/css/main.css HTTP/1.1" 200 38769 "https://www.example.com/products" "curl/8.7.1"
+203.0.113.61 - - [01/Sep/2026:09:40:02 +0000] "GET /cart HTTP/1.1" 2OO 7781 "-" "curl/8.7.1"
 192.0.2.37 - - [01/Sep/2026:09:45:18 +0000] "GET /index.html HTTP/1.1" 301 6703 "-" "Mozilla/5.0 (X11; Linux x86_64; rv:129.0) Gecko/20100101 Firefox/129.0"
 192.0.2.30 - - [01/Sep/2026:09:46:43 +0000] "GET /about HTTP/1.1" 200 11591 "-" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36"
 192.0.2.14 - - [01/Sep/2026:09:47:36 +0000] "GET /static/css/main.css HTTP/1.1" 301 30996 "https://www.example.com/" "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15"
@@ -148,6 +152,7 @@
 192.0.2.22 - - [01/Sep/2026:10:07:04 +0000] "GET /products HTTP/1.1" 304 0 "https://www.example.com/" "python-requests/2.32.3"
 192.0.2.11 - - [01/Sep/2026:10:08:01 +0000] "GET /contact HTTP/1.1" 304 0 "https://www.example.com/products" "Googlebot/2.1 (+http://www.google.com/bot.html)"
 203.0.113.60 - - [01/Sep/2026:10:08:20 +0000] "GET /api/v1/orders/1001 HTTP/1.1" 500 10316 "-" "python-requests/2.32.3"
+this line is not an access log entry
 198.51.100.17 - - [01/Sep/2026:10:08:54 +0000] "GET /logout HTTP/1.1" 301 26249 "-" "python-requests/2.32.3"
 203.0.113.69 - - [01/Sep/2026:10:10:21 +0000] "GET /favicon.ico HTTP/1.1" 200 20952 "https://www.example.com/products" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36"
 192.0.2.39 - - [01/Sep/2026:10:11:41 +0000] "GET /about HTTP/1.1" 200 45052 "https://www.example.com/" "Googlebot/2.1 (+http://www.google.com/bot.html)"
@@ -178,6 +183,7 @@
 198.51.100.21 - - [01/Sep/2026:10:30:49 +0000] "GET /api/v1/users HTTP/1.1" 200 29343 "-" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36"
 192.0.2.17 - - [01/Sep/2026:10:32:17 +0000] "GET /api/v1/users HTTP/1.1" 304 0 "https://www.example.com/" "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
 192.0.2.37 - - [01/Sep/2026:10:32:53 +0000] "GET /products/17 HTTP/1.1" 503 30000 "-" "Googlebot/2.1 (+http://www.google.com/bot.html)"
+192.0.2.30 - - [01/Sep/2026:10:31:15 +0000] "GET /products HTTP/1.1 200 1024
 198.51.100.6 - - [01/Sep/2026:10:34:15 +0000] "GET /admin HTTP/1.1" 401 3514 "https://www.example.com/" "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15"
 192.0.2.37 - - [01/Sep/2026:10:35:28 +0000] "GET /products/17 HTTP/1.1" 200 36520 "-" "python-requests/2.32.3"
 198.51.100.10 - - [01/Sep/2026:10:35:58 +0000] "GET /logout HTTP/1.1" 404 39258 "-" "python-requests/2.32.3"
