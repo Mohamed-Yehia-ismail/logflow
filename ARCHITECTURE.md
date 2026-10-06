@@ -1,5 +1,108 @@
 # LogFlow Architecture
 
+## Increment 2: Typed Records and the First Real Filter
+
+### Diagram
+
+```
++----------------+          +----------------+             +-----------------+
+| FileLineSource | -------> |  ParserStage   | ----------> |   ConsoleSink   |
+| Source<string> |  string  | Stage<string,  |  LogRecord  | Sink<LogRecord> |
+| reads the file |          |    LogRecord>  |             | prints records  |
++----------------+          +----------------+             +-----------------+
+                             malformed lines:
+                             skipped + counted,
+                             total printed on close()
+```
+
+### From strings to a domain model
+
+In Increment 1 the pipeline carried raw `std::string` lines. Every later stage would
+have had to re-parse the text to find a status code or a path. Now the pipeline carries
+a **domain model**, `LogRecord`, and parsing happens exactly once, in `ParserStage`.
+
+Each component has one concern:
+
+| Component        | Knows about                         | Does not know about        |
+|------------------|-------------------------------------|----------------------------|
+| `FileLineSource` | files and lines                     | log formats, records       |
+| `ParserStage`    | the Common Log Format               | files, consoles            |
+| `ConsoleSink`    | how to display a `LogRecord`        | where records come from    |
+| `Pipeline`       | the order of components             | any concrete component     |
+
+### LogRecord
+
+```cpp
+class LogRecord : public Record {
+    Timestamp timestamp; std::string clientIp, method, path;
+    int status; long long bytes; std::string userAgent;
+    std::map<std::string, std::string> attributes;
+    std::string raw;
+};
+```
+
+- **Immutable.** Fields are private with const accessors only. A record is created in
+  one step with `LogRecord::Builder`. Stages can never modify a record that another
+  stage is still holding; to "change" a record a stage creates a new one with
+  `withAttribute`.
+- **`raw`** keeps the original line, so nothing is lost by parsing.
+- **`attributes` is the extension point.** Later stages (weeks 5 to 7) will attach data
+  that today's parser knows nothing about, such as an enrichment or a classification.
+  An open key/value map means those stages can enrich records **without changing
+  `LogRecord`, `ParserStage` or any other stage**: the record format is open for
+  extension and closed for modification. The parser already uses it for the optional
+  `referer` field.
+- **Timestamps** are converted to UTC when parsed, so records from servers in different
+  time zones compare correctly.
+
+### ParserStage
+
+Accepts the Common Log Format, and the Combined Log Format extension
+(`"referer" "user-agent"`):
+
+```
+host ident authuser [dd/Mon/yyyy:HH:MM:SS +zzzz] "METHOD path PROTOCOL" status bytes ["referer" "user-agent"]
+```
+
+A line is **malformed** if it does not match this shape, the date does not exist, the
+request line does not have exactly three parts, the status code is not a number from
+100 to 599, or the byte count is not a number or `-`.
+
+**Malformed lines are only skipped and counted in this increment.** The stage uses the
+`close()` lifecycle hook (unused since Increment 1) to print the total at the end of the
+run. Proper handling of malformed lines (reporting why a line is bad, sending it to a
+separate output) is planned for **week 5**. The architecture is built in layers: this
+increment establishes where that decision lives (inside the parser stage) without
+building the full mechanism yet.
+
+### What changed to add the parser
+
+Only the code that *assembles* the pipeline and the sink that *displays* records:
+
+- `src/main.cpp`: one `addStage(...)` call.
+- `ConsoleSink`: now prints a `LogRecord` instead of a string (a task requirement).
+
+`Pipeline`, all five interfaces and `FileLineSource` were **not changed**. A new stage was
+inserted into the middle of an existing pipeline and its neighbours did not notice.
+See [CHANGELOG.md](CHANGELOG.md) for the full list.
+
+### Testing without files
+
+Stage tests do not read any file. A stage depends only on the `Emitter` interface, not on
+the component that comes after it. So a test can:
+
+1. create the stage,
+2. call `process` with a string,
+3. pass a `CollectingEmitter` (a test double that stores what it receives),
+4. check the stored records.
+
+This matters because the tests are fast, have no setup or clean-up, cannot fail because
+of the environment, and test the parser in isolation. It is a direct result of the
+architecture: components talk through small interfaces, so any neighbour can be
+replaced by a fake. `CollectingEmitter` will be reused for every stage in later weeks.
+
+---
+
 ## Increment 1: The Skeleton Pipeline
 
 ### Diagram
