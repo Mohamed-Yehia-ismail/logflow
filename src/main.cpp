@@ -3,25 +3,27 @@
 
 #include <exception>
 #include <iostream>
-#include <memory>
+#include <string>
+#include <vector>
 
-#include "logflow/core/Pipeline.hpp"
-#include "logflow/io/ConsoleSink.hpp"
-#include "logflow/io/FileLineSource.hpp"
-#include "logflow/stages/ParserStage.hpp"
+#include "logflow/app/CommandLine.hpp"
+#include "logflow/app/PipelineAssembly.hpp"
 
 int main(int argc, char* argv[]) {
-    if (argc != 2) {
-        std::cerr << "Usage: logflow <log-file>\n";
-        return 2;
-    }
-
     try {
-        logflow::Pipeline pipeline(std::make_unique<logflow::FileLineSource>(argv[1]));
-        pipeline.addStage(std::make_unique<logflow::ParserStage>())
-            .setSink(std::make_unique<logflow::ConsoleSink>());
+        const logflow::Options options =
+            logflow::parseCommandLine(std::vector<std::string>(argv + 1, argv + argc));
+        if (options.help) {
+            std::cout << logflow::usageText();
+            return 0;
+        }
+
+        logflow::Pipeline pipeline = logflow::assemblePipeline(options);
 
         pipeline.run();
+    } catch (const logflow::UsageError& e) {
+        std::cerr << "logflow: " << e.what() << "\n\n" << logflow::usageText();
+        return 2;
     } catch (const std::exception& e) {
         std::cerr << "logflow: " << e.what() << '\n';
         return 1;

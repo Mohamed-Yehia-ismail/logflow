@@ -22,16 +22,23 @@ LogRecord::Builder base() {
 
 TEST(ConsoleSinkTest, PrintsRecordOnOneReadableLine) {
     std::ostringstream out;
-    ConsoleSink sink(out);
+    ConsoleSink<> sink(out);
     sink.consume(base().userAgent("curl/8.7.1").build());
     EXPECT_EQ(out.str(), "2026-09-01T08:01:22Z  192.0.2.38  GET /contact  200  18224 B  \"curl/8.7.1\"\n");
 }
 
 TEST(ConsoleSinkTest, OmitsUserAgentWhenThereIsNone) {
     std::ostringstream out;
-    ConsoleSink sink(out);
+    ConsoleSink<> sink(out);
     sink.consume(base().build());
     EXPECT_EQ(out.str(), "2026-09-01T08:01:22Z  192.0.2.38  GET /contact  200  18224 B\n");
+}
+
+TEST(ConsoleSinkTest, PrintsProjectedRecordsAsKeyValuePairs) {
+    std::ostringstream out;
+    ConsoleSink<ProjectedRecord> sink(out);
+    sink.consume(ProjectedRecord({{"status", "500"}, {"path", "/api"}}));
+    EXPECT_EQ(out.str(), "status=500 path=/api\n");
 }
 
 }  // namespace

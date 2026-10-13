@@ -47,6 +47,25 @@ TEST(TimestampTest, RejectsInvalidText) {
     EXPECT_FALSE(parseClfTimestamp("0a/Sep/2026:08:01:22 +0000"));
 }
 
+TEST(TimestampTest, ParsesIso8601AndRoundTrips) {
+    const auto t = parseIso8601("2026-09-01T08:01:22Z");
+    ASSERT_TRUE(t);
+    EXPECT_EQ(formatIso8601(*t), "2026-09-01T08:01:22Z");
+    EXPECT_EQ(t, parseClfTimestamp("01/Sep/2026:08:01:22 +0000"));
+}
+
+TEST(TimestampTest, RejectsInvalidIso8601) {
+    EXPECT_FALSE(parseIso8601(""));
+    EXPECT_FALSE(parseIso8601("2026-09-01 08:01:22Z"));
+    EXPECT_FALSE(parseIso8601("2026-09-01T08:01:22"));
+    EXPECT_FALSE(parseIso8601("2026-13-01T08:01:22Z"));
+    EXPECT_FALSE(parseIso8601("2026-02-29T08:01:22Z"));
+    EXPECT_FALSE(parseIso8601("2026-09-01T24:00:00Z"));
+    EXPECT_FALSE(parseIso8601("2026-09-01T08:60:00Z"));
+    EXPECT_FALSE(parseIso8601("2026-09-01T08:01:60Z"));
+    EXPECT_FALSE(parseIso8601("20x6-09-01T08:01:22Z"));
+}
+
 TEST(TimestampTest, FormatsTimesBeforeTheEpoch) {
     EXPECT_EQ(formatIso8601(Timestamp(std::chrono::seconds(-1))), "1969-12-31T23:59:59Z");
 }

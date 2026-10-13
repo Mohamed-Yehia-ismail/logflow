@@ -1,5 +1,200 @@
 # LogFlow Architecture
 
+## Increment 3: Composition: Filtering, Projection and the Pipeline Builder
+
+### Diagram
+
+```
+                                    one per option, any number, any order
+                                  +--------------------------------------+
++----------------+   +--------+   |  +----------------------+            |   +-----------------+   +-----------------+
+| FileLineSource |-->| Parser |-->|  | PredicateFilterStage |--> ...    |-->| ProjectionStage |-->| FileSink        |
+| string         |   | Stage  |   |  | LogRecord->LogRecord |            |   | LogRecord ->    |   | or ConsoleSink  |
++----------------+   +--------+   |  +----------------------+            |   | ProjectedRecord |   +-----------------+
+                                  +--------------------------------------+   +-----------------+
+                                    --min-status --path-prefix                  --fields            --out
+                                    --since --until
+```
+
+### A filter and a transformer are the same architectural element
+
+`PredicateFilterStage` removes records. `ProjectionStage` reshapes them. `ParserStage`
+changes their type. All three are just a `Stage<I, O>`:
+
+| Stage                  | Input       | Output            | Outputs per input |
+|------------------------|-------------|-------------------|-------------------|
+| `ParserStage`          | `string`    | `LogRecord`       | 0 or 1            |
+| `PredicateFilterStage` | `LogRecord` | `LogRecord`       | 0 or 1            |
+| `ProjectionStage`      | `LogRecord` | `ProjectedRecord` | exactly 1         |
+
+This is why Increment 1 made `process` emit through an `Emitter` instead of returning a
+value: dropping, transforming and type-changing stages all fit the same interface, so the
+pipeline does not need to know which kind it is running. Stages can be combined in any
+number and in any order, as long as each one accepts what the previous one produces.
+
+Each stage has exactly one responsibility and stays small (lines of code, without
+comments and blank lines):
+
+| Stage                  | Lines of code |
+|------------------------|--------------:|
+| `PredicateFilterStage` | 21 |
+| `ProjectionStage`      | 36 (header + source) |
+| `FileSink`             | 35 |
+
+`PredicateFilterStage` does not know any filtering rule: the rule is a predicate passed
+in from outside (`predicates::minStatus(400)`, `pathPrefix("/api")`,
+`timeBetween(from, to)`). New rules need no new stage.
+
+### Projection and data minimization
+
+`ProjectionStage` reduces each record to the requested fields and emits a
+`ProjectedRecord`. Two reasons:
+
+- **Output size.** Four short fields instead of a full log line.
+- **Privacy.** Access logs contain personal data (IP addresses, user agents). Data
+  minimization (for example under the GDPR) means passing on only what the reader
+  actually needs. The raw line is deliberately not selectable, because it would bring
+  back every field. Everything after the projection never sees the dropped fields.
+
+### Lifecycle hooks are no longer decoration
+
+Until now, `open()` and `close()` existed but did nothing. `FileSink` is the first
+component that holds a resource:
+
+- `open()` creates (or truncates) the output file.
+- `consume()` writes into a 64 KB buffer in memory, not directly to disk.
+- `close()` flushes the buffer to disk and closes the file.
+
+**If `close()` is never called, the buffered output is silently lost.** The test
+`FileSinkTest.OutputIsOnlyInTheFileAfterClose` makes this visible: after `consume()` the
+file on disk is still empty; only `close()` writes the line.
+
+To support this, `Sink` received the same `open()` / `close()` hooks as `Stage`, and
+`Pipeline::run` now:
+
+1. opens the sink **first**, then the stages in order,
+2. runs the source,
+3. closes the stages in reverse order, then the sink **last** (a stage may still emit
+   while it is being closed, so the sink must still be open),
+4. on failure, still closes everything that was opened, then rethrows the original error.
+
+A note on C++: `std::ofstream` also flushes in its destructor (RAII), which hides this
+bug in simple programs. Relying on it is still wrong. The destructor only runs when the
+pipeline object is destroyed, which can be much later, and never when the program ends
+with `std::exit` or crashes. Errors during that implicit flush are silently ignored,
+while `close()` reports them as an exception.
+
+### PipelineBuilder
+
+```cpp
+Pipeline p = PipelineBuilder::from(std::make_unique<FileLineSource>(in))
+                 .via(std::make_unique<ParserStage>())
+                 .via(std::make_unique<PredicateFilterStage<>>(predicates::minStatus(400)))
+                 .via(std::make_unique<ProjectionStage>(fields))
+                 .to(std::make_unique<FileSink<ProjectedRecord>>(out));
+```
+
+- **Fluent.** The code reads in the same order as the data flows.
+- **Type-checked at compile time.** Every builder step knows the item type at that point.
+  Connecting a stage or sink that expects another type is a compile error
+  (`static_assert`), not a run-time error.
+- **Built on `Pipeline`.** The builder only adds the fluent interface and the compile-time
+  check. `Pipeline` keeps its run-time check for code that assembles it directly.
+
+The builder is the composition mechanism for this increment. In Increment 4 the
+hand-written assembly (`src/app/PipelineAssembly.cpp`) will be replaced by configuration.
+
+### Command-line options decide the composition
+
+`CommandLine` turns the arguments into an `Options` value. `assemblePipeline(options)`
+adds one `PredicateFilterStage` per filter option, a `ProjectionStage` only when
+`--fields` is given, and a `FileSink` or `ConsoleSink` depending on `--out`. `main` still
+does only three things: read the arguments, assemble the pipeline, run it.
+
+### Ordering experiment
+
+**Question.** Does the order of stages change the result? Does it change the performance?
+
+**Setup.** `experiments/OrderingExperiment.cpp`, run with `make experiment`.
+
+- Data: `data/access-small.log` repeated 5000 times, giving 1,030,000 lines and
+  1,000,000 valid records. Experiment 3 uses the first 103,000 lines.
+- Release build (`-O3`), Apple M2, median time of 5 runs.
+- In experiments 1 and 2 the records are parsed once in advance, so only the filter and
+  projection work is measured. Experiment 3 includes parsing.
+- Selectivity in this data: `status >= 400` keeps 37% of records, `path starts with /api`
+  keeps 10.5%, both together keep 4%.
+- The output of both orders is compared line by line.
+
+#### Experiment 1: the order of two filters
+
+| Order                          | Output records | Predicate calls | Median time |
+|--------------------------------|---------------:|----------------:|------------:|
+| A: status filter -> path filter | 40,000 | 1,370,000 | 205.4 ms |
+| B: path filter -> status filter | 40,000 | 1,105,000 | 170.3 ms |
+
+Identical output. B does 19% fewer predicate calls and is 17% faster. Filtering keeps a
+record only if every predicate accepts it, and "and" is commutative, so the result cannot
+depend on the order. The cost does: every record pays for the first filter, but only the
+survivors pay for the second. **Put the most selective (and cheapest) filter first.**
+
+#### Experiment 2: filter before or after projection
+
+| Order                                    | Output records | Projections | Median time |
+|------------------------------------------|---------------:|------------:|------------:|
+| A: filter -> project                     | 370,000 | 370,000   | 384.6 ms |
+| B: project -> filter (on projected text) | 370,000 | 1,000,000 | 565.5 ms |
+
+Identical output, but B is 1.47 times slower: it projects every record, including the 63%
+that are then thrown away. This is a real trade-off, not just a speed question:
+
+- **Filter first (A)** is faster, and the filter works on typed fields (`int status`).
+- **Project first (B)** only works if the projection **keeps every field the filter
+  needs**. Here `status` had to stay in the output. If the user asks for
+  `--fields timestamp,path`, filtering on status after projection is impossible. The filter
+  also has to work on text (`std::stoi` on the projected value), which is weaker.
+- **But projecting first minimizes data earlier.** If the filter were a remote service or
+  a third-party component, projecting first would make sure it never sees the IP address
+  or the user agent. Privacy can be worth the extra cost.
+
+LogFlow assembles filters before the projection (A), because the filters are our own code
+and need typed fields.
+
+#### Experiment 3: experiment 1 including parsing
+
+| Order                       | Output records | Predicate calls | Median time |
+|-----------------------------|---------------:|----------------:|------------:|
+| A: parse -> status -> path | 4,000 | 137,000 | 2393.5 ms |
+| B: parse -> path -> status | 4,000 | 110,500 | 2381.1 ms |
+
+Identical output, and almost the same time (B/A = 0.99). Parsing takes about 23 µs per
+line, which is more than 99% of the run time, so the filter order no longer matters. The
+lesson: optimize the bottleneck. In LogFlow that is the regular expression in
+`ParserStage`, not the filter order.
+
+#### Experiment 4: filtering before parsing
+
+```
+Pipeline: stage input type does not match the previous output type
+```
+
+A filter on `LogRecord` cannot run before the parser, because before parsing there is
+only text and no `status` or `path` field. `Pipeline` rejects this while the pipeline is
+being assembled, and with `PipelineBuilder` it does not even compile. Composition is free
+only within the rules of the types.
+
+#### Conclusions
+
+1. Composable stages give the **same result in any valid order**, as the experiment
+   confirmed for every pair.
+2. **Performance does depend on the order:** a selective filter first saves work for
+   everything after it.
+3. **Filter before or after projection is a design trade-off** between speed and typed
+   filtering (filter first) and early data minimization (project first).
+4. **Parse must come before filter**, which the type system enforces.
+
+---
+
 ## Increment 2: Typed Records and the First Real Filter
 
 ### Diagram

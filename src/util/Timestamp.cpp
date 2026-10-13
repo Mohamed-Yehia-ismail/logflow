@@ -91,6 +91,31 @@ std::optional<Timestamp> parseClfTimestamp(const std::string& text) {
     return Timestamp(std::chrono::seconds(localSeconds - offsetSeconds));
 }
 
+std::optional<Timestamp> parseIso8601(const std::string& text) {
+    // yyyy-mm-ddTHH:MM:SSZ
+    // 01234567890123456789
+    if (text.size() != 20 || text[4] != '-' || text[7] != '-' || text[10] != 'T' ||
+        text[13] != ':' || text[16] != ':' || text[19] != 'Z') {
+        return std::nullopt;
+    }
+
+    const int year = readDigits(text, 0, 4);
+    const int month = readDigits(text, 5, 2);
+    const int day = readDigits(text, 8, 2);
+    const int hour = readDigits(text, 11, 2);
+    const int minute = readDigits(text, 14, 2);
+    const int second = readDigits(text, 17, 2);
+
+    if (year < 0 || month < 1 || month > 12 || day < 1 || hour < 0 || hour > 23 || minute < 0 ||
+        minute > 59 || second < 0 || second > 59 || day > daysInMonth(year, month)) {
+        return std::nullopt;
+    }
+
+    return Timestamp(std::chrono::seconds(
+        daysFromCivil(year, static_cast<unsigned>(month), static_cast<unsigned>(day)) * 86400LL +
+        hour * 3600LL + minute * 60LL + second));
+}
+
 std::string formatIso8601(Timestamp timestamp) {
     const long long total =
         std::chrono::floor<std::chrono::seconds>(timestamp.time_since_epoch()).count();

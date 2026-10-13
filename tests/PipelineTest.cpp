@@ -63,6 +63,18 @@ private:
     Log& log_;
 };
 
+// Records its lifecycle calls.
+class LoggingSink : public Sink<std::string> {
+public:
+    explicit LoggingSink(Log& log) : log_(log) {}
+    void consume(const std::string& item) override { log_.push_back("consume " + item); }
+    void open() override { log_.push_back("open sink"); }
+    void close() override { log_.push_back("close sink"); }
+
+private:
+    Log& log_;
+};
+
 class FailingStage : public Stage<std::string, std::string> {
 public:
     explicit FailingStage(Log& log) : log_(log) {}
@@ -127,6 +139,22 @@ TEST(PipelineTest, StageFailureStopsRunAndStillClosesStages) {
     EXPECT_THROW(pipeline.run(), StageException);
     EXPECT_TRUE(received.empty());
     EXPECT_EQ(log, (Log{"close failing"}));
+}
+
+TEST(PipelineTest, SinkIsOpenedFirstAndClosedLast) {
+    Log log;
+    Pipeline pipeline(std::make_unique<ListSource>(std::vector<std::string>{"a"}));
+    pipeline.addStage(std::make_unique<DropStage>("x", log)).setSink(std::make_unique<LoggingSink>(log));
+    pipeline.run();
+    EXPECT_EQ(log, (Log{"open sink", "open drop", "consume a", "close drop", "close sink"}));
+}
+
+TEST(PipelineTest, SinkIsClosedEvenWhenAStageFails) {
+    Log log;
+    Pipeline pipeline(std::make_unique<ListSource>(std::vector<std::string>{"a"}));
+    pipeline.addStage(std::make_unique<FailingStage>(log)).setSink(std::make_unique<LoggingSink>(log));
+    EXPECT_THROW(pipeline.run(), StageException);
+    EXPECT_EQ(log, (Log{"open sink", "close failing", "close sink"}));
 }
 
 }  // namespace

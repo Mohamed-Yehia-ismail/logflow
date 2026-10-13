@@ -3,18 +3,19 @@
 #include <iostream>
 
 #include "logflow/core/Sink.hpp"
+#include "logflow/io/LineFormat.hpp"
 #include "logflow/model/LogRecord.hpp"
 
 namespace logflow {
 
-// Prints every record it receives as one readable line, for example:
-//
-//   2026-09-01T08:01:22Z  192.0.2.38  GET /contact  200  18224 B  "Mozilla/5.0 ..."
-class ConsoleSink : public Sink<LogRecord> {
+// Prints every item it receives as one line (see LineFormat.hpp).
+// Works for any item type that has a formatLine overload, LogRecord by default.
+template <typename T = LogRecord>
+class ConsoleSink : public Sink<T> {
 public:
     explicit ConsoleSink(std::ostream& out = std::cout) : out_(out) {}
 
-    void consume(const LogRecord& record) override;
+    void consume(const T& item) override { out_ << formatLine(item) << '\n'; }
 
 private:
     std::ostream& out_;

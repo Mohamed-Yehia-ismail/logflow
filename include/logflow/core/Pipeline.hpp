@@ -51,6 +51,12 @@ private:
         std::function<void()> close;
     };
 
+    struct ErasedSink {
+        Next consume;
+        std::function<void()> open;
+        std::function<void()> close;
+    };
+
     // Adapts a typed Emitter<T> onto the type-erased chain.
     template <typename T>
     class ErasedEmitter : public Emitter<T> {
@@ -67,7 +73,7 @@ private:
 
     std::function<void(const Next&)> produce_;
     std::vector<ErasedStage> stages_;
-    Next consume_;
+    ErasedSink sink_;
     std::type_index currentType_;
 };
 
@@ -109,7 +115,11 @@ Pipeline& Pipeline::setSink(std::unique_ptr<S> sink) {
     if (!sink) throw std::invalid_argument("Pipeline: sink is null");
     expectType<I>("sink");
     std::shared_ptr<Sink<I>> owned = std::move(sink);
-    consume_ = [owned](const std::any& item) { owned->consume(std::any_cast<const I&>(item)); };
+    sink_ = ErasedSink{
+        [owned](const std::any& item) { owned->consume(std::any_cast<const I&>(item)); },
+        [owned] { owned->open(); },
+        [owned] { owned->close(); },
+    };
     return *this;
 }
 

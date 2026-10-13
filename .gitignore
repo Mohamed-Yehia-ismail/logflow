@@ -5,3 +5,5 @@ build/
 .idea/
 .vscode/
 cmake-build-*/
+*.profraw
+*.profdata

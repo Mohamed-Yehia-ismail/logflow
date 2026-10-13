@@ -13,6 +13,10 @@ using Timestamp = std::chrono::system_clock::time_point;
 // and converts it to UTC. Returns std::nullopt if the text is not a valid date.
 std::optional<Timestamp> parseClfTimestamp(const std::string& text);
 
+// Parses an ISO 8601 UTC timestamp in the form "2000-10-10T20:55:36Z".
+// Returns std::nullopt if the text is not a valid date in that form.
+std::optional<Timestamp> parseIso8601(const std::string& text);
+
 // Formats a timestamp as ISO 8601 in UTC, for example "2000-10-10T20:55:36Z".
 std::string formatIso8601(Timestamp timestamp);
 

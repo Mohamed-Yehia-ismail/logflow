@@ -1,4 +1,4 @@
-# Builds build/logflow. Usage: make, make run, make test, make coverage, make clean
+# Builds build/logflow. Usage: make, make run, make test, make coverage, make experiment, make clean
 # The program builds with make alone; the tests use CMake and GoogleTest.
 CXX      ?= c++
 CXXFLAGS ?= -std=c++17 -Wall -Wextra -Wpedantic -O2
@@ -9,7 +9,7 @@ OBJS := $(SRCS:src/%.cpp=build/obj/%.o)
 DEPS := $(OBJS:.o=.d)
 BIN  := build/logflow
 
-.PHONY: all run test coverage clean
+.PHONY: all run test coverage experiment clean
 
 all: $(BIN)
 
@@ -30,6 +30,11 @@ test:
 
 coverage:
 	./scripts/coverage.sh
+
+experiment:
+	cmake -S . -B build/release -DCMAKE_BUILD_TYPE=Release -DLOGFLOW_BUILD_TESTS=OFF
+	cmake --build build/release --target logflow_ordering_experiment -j
+	./build/release/logflow_ordering_experiment data/access-small.log
 
 clean:
 	rm -rf build
