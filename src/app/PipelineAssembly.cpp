@@ -4,6 +4,8 @@
 #include <memory>
 #include <utility>
 
+#include "logflow/config/BuiltinComponents.hpp"
+#include "logflow/config/PipelineLoader.hpp"
 #include "logflow/core/PipelineBuilder.hpp"
 #include "logflow/io/ConsoleSink.hpp"
 #include "logflow/io/FileLineSource.hpp"
@@ -25,6 +27,11 @@ Pipeline finish(PipelineBuilder::Step<T> step, const Options& options) {
 }  // namespace
 
 Pipeline assemblePipeline(const Options& options) {
+    if (options.config) {
+        const StageRegistry registry = builtinRegistry();
+        return PipelineLoader(registry).loadFile(*options.config).pipeline;
+    }
+
     auto step = PipelineBuilder::from(std::make_unique<FileLineSource>(options.input))
                     .via(std::make_unique<ParserStage>());
 

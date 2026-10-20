@@ -1,0 +1,8 @@
+pipeline:
+  name: empty-pipeline
+  source:
+    type: file
+    params: { path: data/access-small.log }
+  stages: []
+  sink:
+    type: console

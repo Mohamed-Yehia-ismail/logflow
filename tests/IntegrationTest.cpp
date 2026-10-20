@@ -73,5 +73,27 @@ TEST_F(IntegrationTest, WithoutFieldsTheFullRecordIsWritten) {
               "2026-09-01T08:00:35Z  192.0.2.16  GET /api/v1/users?page=2  503  1200 B  \"curl/8.7.1\"\n");
 }
 
+TEST_F(IntegrationTest, ConfigOptionLoadsThePipelineFromYaml) {
+    const fs::path config = fs::temp_directory_path() / "logflow-integration-config.yaml";
+    std::ofstream(config) << "pipeline:\n"
+                             "  source: { type: file, params: { path: " << kFixture << " } }\n"
+                             "  stages:\n"
+                             "    - type: parse\n"
+                             "    - type: filter\n"
+                             "      params: { field: path, op: startsWith, value: /api }\n"
+                             "    - type: project\n"
+                             "      params: { fields: [method, path] }\n"
+                             "  sink: { type: file, params: { path: " << out.string() << " } }\n";
+
+    assemblePipeline(parseCommandLine({"--config", config.string()})).run();
+    fs::remove(config);
+
+    EXPECT_EQ(readFile(out),
+              "method=GET path=/api/v1/users\n"
+              "method=POST path=/api/v1/orders\n"
+              "method=GET path=/api/v1/orders/7\n"
+              "method=GET path=\"/api/v1/users?page=2\"\n");
+}
+
 }  // namespace
 }  // namespace logflow

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <stdexcept>
@@ -14,7 +15,7 @@ namespace logflow {
 
 // Writes every item it receives as one line to a file (see LineFormat.hpp).
 //
-// open() creates or truncates the file; close() flushes and closes it. Output is
+// open() creates or truncates the file (and its directory); close() flushes and closes it. Output is
 // buffered, so until close() runs, the last lines exist only in memory: a sink
 // that is never closed loses them.
 template <typename T = LogRecord>
@@ -25,6 +26,9 @@ public:
     explicit FileSink(std::string path) : path_(std::move(path)) {}
 
     void open() override {
+        const std::filesystem::path parent = std::filesystem::path(path_).parent_path();
+        std::error_code ignored;  // if this fails, opening the file below reports it
+        if (!parent.empty()) std::filesystem::create_directories(parent, ignored);
         file_.rdbuf()->pubsetbuf(buffer_.get(), kBufferSize);  // must precede open
         file_.open(path_, std::ios::out | std::ios::trunc);
         if (!file_) throw std::runtime_error("Cannot open output file " + path_);

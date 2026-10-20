@@ -11,6 +11,7 @@ namespace logflow {
 
 // What the user asked for on the command line.
 struct Options {
+    std::optional<std::string> config;               // --config FILE (a YAML pipeline)
     std::string input;
     std::optional<std::string> output;               // --out FILE (default: console)
     std::optional<int> minStatus;                    // --min-status N

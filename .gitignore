@@ -7,3 +7,4 @@ build/
 cmake-build-*/
 *.profraw
 *.profdata
+out/

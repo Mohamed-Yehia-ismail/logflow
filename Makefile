@@ -1,32 +1,20 @@
-# Builds build/logflow. Usage: make, make run, make test, make coverage, make experiment, make clean
-# The program builds with make alone; the tests use CMake and GoogleTest.
-CXX      ?= c++
-CXXFLAGS ?= -std=c++17 -Wall -Wextra -Wpedantic -O2
-CPPFLAGS += -Iinclude
-
-SRCS := $(shell find src -name '*.cpp')
-OBJS := $(SRCS:src/%.cpp=build/obj/%.o)
-DEPS := $(OBJS:.o=.d)
-BIN  := build/logflow
+# Convenience targets. The build itself is done by CMake (see CMakeLists.txt).
+# Usage: make, make run, make test, make coverage, make experiment, make clean
+BUILD := build/cmake
 
 .PHONY: all run test coverage experiment clean
 
-all: $(BIN)
+all:
+	@cmake -S . -B $(BUILD) -DCMAKE_BUILD_TYPE=Release >/dev/null
+	@cmake --build $(BUILD) --target logflow -j
 
-$(BIN): $(OBJS)
-	$(CXX) $(CXXFLAGS) -o $@ $^
-
-build/obj/%.o: src/%.cpp
-	@mkdir -p $(dir $@)
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -MMD -MP -c $< -o $@
-
-run: $(BIN)
-	./$(BIN) data/access-small.log
+run: all
+	./$(BUILD)/logflow --config configs/error-report.yaml && cat out/errors.txt
 
 test:
-	cmake -S . -B build/cmake
-	cmake --build build/cmake --target logflow_tests -j
-	ctest --test-dir build/cmake --output-on-failure
+	cmake -S . -B $(BUILD) -DCMAKE_BUILD_TYPE=Release
+	cmake --build $(BUILD) -j
+	ctest --test-dir $(BUILD) --output-on-failure
 
 coverage:
 	./scripts/coverage.sh
@@ -37,6 +25,4 @@ experiment:
 	./build/release/logflow_ordering_experiment data/access-small.log
 
 clean:
-	rm -rf build
-
--include $(DEPS)
+	rm -rf build out

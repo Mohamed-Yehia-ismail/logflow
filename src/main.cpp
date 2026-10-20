@@ -8,6 +8,7 @@
 
 #include "logflow/app/CommandLine.hpp"
 #include "logflow/app/PipelineAssembly.hpp"
+#include "logflow/config/ConfigError.hpp"
 
 int main(int argc, char* argv[]) {
     try {
@@ -24,6 +25,9 @@ int main(int argc, char* argv[]) {
     } catch (const logflow::UsageError& e) {
         std::cerr << "logflow: " << e.what() << "\n\n" << logflow::usageText();
         return 2;
+    } catch (const logflow::ConfigError& e) {
+        std::cerr << "logflow: configuration error: " << e.what() << '\n';
+        return 3;
     } catch (const std::exception& e) {
         std::cerr << "logflow: " << e.what() << '\n';
         return 1;

@@ -1,0 +1,21 @@
+# API traffic extract: every call to the API (/api/...), with method, result and size.
+pipeline:
+  name: api-traffic
+
+  source:
+    type: file
+    params: { path: data/access-small.log }
+
+  stages:
+    - type: parse
+      params: { format: clf }
+
+    - type: filter
+      params: { field: path, op: startsWith, value: /api }
+
+    - type: project
+      params: { fields: [timestamp, method, path, status, bytes] }
+
+  sink:
+    type: file
+    params: { path: out/api-traffic.txt }

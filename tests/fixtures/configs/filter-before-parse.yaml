@@ -1,0 +1,12 @@
+pipeline:
+  name: filter-before-parse
+  source:
+    type: file
+    params: { path: data/access-small.log }
+  stages:
+    - type: filter
+      params: { field: status, op: ">=", value: 400 }
+    - type: parse
+  sink:
+    type: file
+    params: { path: out/filter-before-parse.txt }

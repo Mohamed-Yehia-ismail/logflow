@@ -1,0 +1,23 @@
+# Bandwidth-by-client extract: how many bytes each client received per request.
+# Only requests that sent data (bytes > 0) are kept, and only the fields needed
+# to add up bandwidth per client: the client, the bytes and the time.
+pipeline:
+  name: bandwidth-by-client
+
+  source:
+    type: file
+    params: { path: data/access-small.log }
+
+  stages:
+    - type: parse
+      params: { format: clf }
+
+    - type: filter
+      params: { field: bytes, op: ">", value: 0 }
+
+    - type: project
+      params: { fields: [clientIp, bytes, timestamp] }
+
+  sink:
+    type: file
+    params: { path: out/bandwidth-by-client.txt }

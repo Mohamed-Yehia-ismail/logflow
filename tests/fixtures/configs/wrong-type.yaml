@@ -1,0 +1,12 @@
+pipeline:
+  name: wrong-type
+  source:
+    type: file
+    params: { path: data/access-small.log }
+  stages:
+    - type: parse
+    - type: filter
+      params: { field: status, op: ">=", value: four-hundred }
+  sink:
+    type: file
+    params: { path: out/wrong-type.txt }

@@ -1,0 +1,12 @@
+pipeline:
+  name: unknown-stage
+  source:
+    type: file
+    params: { path: data/access-small.log }
+  stages:
+    - type: parse
+    - type: filtr
+      params: { field: status, op: ">=", value: 400 }
+  sink:
+    type: file
+    params: { path: out/unknown-stage.txt }

@@ -1,5 +1,177 @@
 # LogFlow Architecture
 
+## Increment 4: Configuration-Driven Composition and the Stage Registry
+
+### The goal
+
+Until Increment 3, the shape of the pipeline was decided in C++ code
+(`PipelineAssembly.cpp`). Every new kind of pipeline meant changing code and building
+again. Now the pipeline is described in a **YAML file**, and the program builds it at
+start-up:
+
+```
+logflow --config configs/error-report.yaml
+```
+
+**Milestone: a new pipeline does not need a new build.** Write a new YAML file, run the
+same program.
+
+This separates the **architecture description** (which components, in which order, with
+which parameters: the YAML file) from the **architecture implementation** (the C++
+components). The same separation as between a building plan and the bricks.
+
+### Diagram
+
+```
+ configs/*.yaml
+       |
+       v
++----------------+   1. read      +---------------------------------------------+
+| PipelineLoader | -------------> | YAML schema check: keys, shapes, lists      |
+|                |   2. resolve   +---------------------------------------------+
+|                | -------------> | StageRegistry                               |
+|                |                |   sources: file                             |
+|                |                |   stages:  parse, filter, project           |
+|                |                |   sinks:   file, console                    |
+|                |   3. build     +---------------------------------------------+
+|                | -------------> | factories validate params, create components|
++----------------+                +---------------------------------------------+
+       |
+       v
+    Pipeline  --run()-->  FileLineSource -> ParserStage -> PredicateFilterStage -> ProjectionStage -> FileSink
+```
+
+### Configuration schema
+
+```yaml
+pipeline:
+  name: error-report                 # optional, used in messages
+
+  source:                            # required: exactly one source
+    type: file
+    params: { path: data/access-small.log }
+
+  stages:                            # required: a non-empty list, in order
+    - type: parse
+      params: { format: clf }
+
+    - type: filter
+      params: { field: status, op: ">=", value: 400 }
+
+    - type: project
+      params: { fields: [timestamp, clientIp, status, path] }
+
+  sink:                              # required: exactly one sink
+    type: file
+    params: { path: out/errors.txt }
+```
+
+Every component has a `type` (required) and `params` (optional). Unknown keys are
+errors, so a typo like `stage:` instead of `stages:` is reported instead of ignored.
+
+| Kind   | `type`    | Parameters | Consumes | Produces |
+|--------|-----------|------------|----------|----------|
+| source | `file`    | `path` (text, required, the file must exist) | | text lines |
+| stage  | `parse`   | `format` (optional: `clf` or `combined`, default `clf`) | text lines | parsed records |
+| stage  | `filter`  | `field`, `op`, `value` (all required, see below) | parsed records | parsed records |
+| stage  | `project` | `fields` (required, a non-empty list of field names) | parsed records | projected records |
+| sink   | `file`    | `path` (text, required; the directory is created) | parsed or projected records | |
+| sink   | `console` | none | parsed or projected records | |
+
+**Filter.** `field` is one of `timestamp`, `clientIp`, `method`, `path`, `status`, `bytes`,
+`userAgent`. The allowed operators and the type of `value` depend on the field:
+
+| Field type | Fields | Operators | `value` |
+|------------|--------|-----------|---------|
+| number | `status`, `bytes` | `==` `!=` `<` `<=` `>` `>=` | a whole number |
+| time   | `timestamp` | `==` `!=` `<` `<=` `>` `>=` | UTC time, e.g. `2026-09-01T09:00:00Z` |
+| text   | `clientIp`, `method`, `path`, `userAgent` | `==` `!=` `startsWith` `endsWith` `contains` | any text |
+
+Operators that start with `<`, `>` or `!` must be quoted in YAML (`op: ">="`), because
+these characters have a special meaning there.
+
+### StageRegistry and StageFactory
+
+`StageRegistry` maps the type names written in the YAML file to **factories**. A
+`StageFactory<S>` is a function that receives the configured parameters, validates them,
+and creates a component of type `S`.
+
+```cpp
+void registerBuiltinComponents(StageRegistry& registry) {
+    registry.addSource<FileLineSource>("file", fileSource);
+
+    registry.addStage<ParserStage>("parse", parseStage);
+    registry.addStage<PredicateFilterStage<>>("filter", filterStage);
+    registry.addStage<ProjectionStage>("project", projectStage);
+
+    registry.addSink<FileSink<LogRecord>>("file", fileSink<LogRecord>);
+    ...
+}
+```
+
+**Registration is data, not a switch.** The loader never names a concrete component; it
+only looks up names in the registry. To add a new stage type, add **one entry** to this
+table (in `src/config/BuiltinComponents.cpp`). The loader, the pipeline and the other
+stages do not change. `StageRegistryTest.NewStageTypeIsUsableFromConfigurationWithoutChangingTheLoader`
+proves this: it registers a new stage in a test and uses it from YAML immediately.
+
+C++ has no reflection or annotations like Java's `ServiceLoader` or C#'s attributes, so
+LogFlow uses the alternative the assignment allows: a single registration table. (Self-
+registering static objects were not used: in a static library the linker may drop them,
+and their start-up order is not defined.)
+
+Each entry also records the **item types** its component consumes and produces. This lets
+the loader check that the configured pipeline fits together *before* building anything.
+
+### PipelineLoader: three steps, all before any data is read
+
+1. **Read.** The YAML is parsed and checked against the schema: required keys, no unknown
+   keys, `stages` is a non-empty list, parameters are single values or lists.
+2. **Resolve.** Every `type` is looked up in the registry, and the item types are checked
+   from source to sink (a `filter` needs parsed records, so it cannot come before `parse`).
+3. **Build.** Every factory validates its parameters (required, allowed, correct type) and
+   creates its component. The components are added to a `Pipeline`.
+
+Only then does `main` call `run()`.
+
+### Configuration-time errors vs. run-time data errors
+
+| | Configuration-time error | Run-time data error |
+|---|---|---|
+| Example | unknown stage type, missing parameter, `value: abc` for `status` | a malformed line in the log file |
+| Found | while loading, before any data is read | while the pipeline runs |
+| Cause | the person who wrote the configuration | the data |
+| Handling | **fail fast, fail loudly**: stop at once, exit code 3, message with file, line, problem and fix | skip and count, keep processing the rest (proper handling: Increment 5) |
+
+Why fail fast? A configuration error means the pipeline is not what the user intended. Running
+it anyway would produce wrong output that looks right. Stopping before reading any data also
+means no half-written output files (`PipelineLoaderTest.ErrorsAreFoundBeforeAnyDataIsWritten`).
+
+Every message has the same structure: **where** (file and line), **which component**
+(`stage 2 (filter)`), **what is wrong**, and **how to fix it** (the expected parameters, the
+known types, `Did you mean 'filter'?`, `Add a 'parse' stage before it.`). Examples are in the
+README.
+
+### Three configurations, one program
+
+| Configuration | Stages | Output |
+|---|---|---|
+| `error-report.yaml` | parse, filter `status >= 400`, project 4 fields | `out/errors.txt` (74 lines) |
+| `api-traffic.yaml` | parse, filter `path startsWith /api`, project 5 fields | `out/api-traffic.txt` (21 lines) |
+| `bandwidth-by-client.yaml` | parse, filter `bytes > 0`, project client, bytes, time | `out/bandwidth-by-client.txt` (177 lines) |
+
+`ConfigFilesTest` runs all three and checks their outputs.
+
+### What changed
+
+The command-line options of Increment 3 still work: `assemblePipeline` uses the loader for
+`--config` and the builder otherwise, and `main` is unchanged apart from reporting
+configuration errors. `Pipeline`, the interfaces and the stages did not change. The only
+change to an existing component: `FileSink` now creates the output directory (`out/`) if it
+does not exist. See [CHANGELOG.md](CHANGELOG.md).
+
+---
+
 ## Increment 3: Composition: Filtering, Projection and the Pipeline Builder
 
 ### Diagram

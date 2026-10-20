@@ -3,124 +3,170 @@
 LogFlow is a small log-processing system built as a **pipeline** of components:
 a *source* produces records, *stages* transform or filter them, and a *sink* consumes them.
 
-Current version: **Increment 3: Composition: Filtering, Projection and the Pipeline Builder**
-(tag `v3`). LogFlow is now a configurable command-line log filter: it reads, parses,
-filters, projects and writes.
+Current version: **Increment 4: Configuration-Driven Composition and the Stage Registry**
+(tag `v4`). The pipeline is now described in a YAML file. A new pipeline needs a new
+configuration file, not a new build.
 
 ```
-FileLineSource -> ParserStage -> [PredicateFilterStage ...] -> [ProjectionStage] -> FileSink | ConsoleSink
+configs/error-report.yaml ──> PipelineLoader ──> StageRegistry ──> Pipeline ──> run
 ```
 
 ## Requirements
 
 - A C++17 compiler (clang++ or g++)
-- `make` to build and run the program
-- CMake 3.16+ and GoogleTest to run the tests (GoogleTest is downloaded automatically
-  by CMake if it is not installed)
+- CMake 3.16+
+- yaml-cpp and GoogleTest (both are downloaded automatically by CMake if they are not installed)
 - clang with `llvm-profdata` and `llvm-cov` for the coverage report
 
 ## Usage
 
 ```
+./logflow --config <pipeline.yaml>
 ./logflow <log-file> [options]
+```
 
+The `logflow` script builds the program when needed (with CMake) and runs it.
+
+### With a configuration file
+
+```bash
+./logflow --config configs/error-report.yaml
+cat out/errors.txt
+```
+
+Three configurations come with the project. The same, unchanged program produces three
+different outputs:
+
+| Configuration                        | What it produces                                      | Output                         | Lines |
+|--------------------------------------|-------------------------------------------------------|--------------------------------|------:|
+| `configs/error-report.yaml`          | failed requests (status >= 400): time, client, status, path | `out/errors.txt`         | 74 |
+| `configs/api-traffic.yaml`           | calls to `/api`: time, method, path, status, bytes   | `out/api-traffic.txt`          | 21 |
+| `configs/bandwidth-by-client.yaml`   | requests that sent data (bytes > 0): client, bytes, time | `out/bandwidth-by-client.txt` | 177 |
+
+The configuration format is documented in [ARCHITECTURE.md](ARCHITECTURE.md#configuration-schema).
+
+### With command-line options (Increment 3)
+
+```
   --min-status N        keep records with status >= N
   --path-prefix P       keep records whose path starts with P
   --since TIME          keep records at or after TIME (e.g. 2026-09-01T09:00:00Z)
   --until TIME          keep records before TIME
-  --fields a,b,c        output only these fields: timestamp, clientIp, method,
-                        path, status, bytes, userAgent
+  --fields a,b,c        output only these fields
   --out FILE            write to FILE instead of the console
-  --help                show this help
 ```
 
-Examples:
+`--config` cannot be combined with these options: the configuration describes the whole
+pipeline.
 
-```bash
-# Every record, printed in full
-./logflow data/access-small.log
+### Exit codes
 
-# Failed API calls, reduced to four fields
-./logflow data/access-small.log --min-status 400 --path-prefix /api --fields timestamp,clientIp,status,path
+| Code | Meaning |
+|-----:|---------|
+| 0 | success |
+| 1 | run-time error (for example, the output file cannot be written) |
+| 2 | invalid command line |
+| 3 | invalid configuration |
 
-# Server errors in one hour, written to a file
-./logflow data/access-small.log --min-status 500 --since 2026-09-01T09:00:00Z --until 2026-09-01T10:00:00Z --out errors.txt
+## Error messages
+
+Configuration errors are found **before any data is read** and stop the program with a
+message that says where the problem is (file and line) and how to fix it. The example
+configurations below are in `tests/fixtures/configs/`.
+
+**Unknown stage type**
+
+```
+$ ./logflow --config tests/fixtures/configs/unknown-stage.yaml
+logflow: configuration error: tests/fixtures/configs/unknown-stage.yaml:8: stage 2 (filtr): unknown stage type 'filtr'. Known stage types: filter, parse, project. Did you mean 'filter'?
 ```
 
-Example output with `--fields`:
+**Missing parameter**
 
 ```
-timestamp=2026-09-01T08:03:37Z clientIp=192.0.2.15 status=500 path=/api/v1/orders
-timestamp=2026-09-01T08:12:11Z clientIp=192.0.2.38 status=500 path=/api/v1/orders/1001
-...
-Malformed lines skipped: 6
+$ ./logflow --config tests/fixtures/configs/missing-param.yaml
+logflow: configuration error: tests/fixtures/configs/missing-param.yaml:8: stage 2 (filter): missing required parameter 'value'. Expected parameters: field, op, value.
 ```
 
-Projected records are written as `name=value` pairs (the logfmt style). Values that
-contain spaces, quotes or `=` are quoted. Without `--fields`, the full record is printed
-as in Increment 2. The malformed-line count is written to standard error at the end.
+**Parameter of the wrong type**
 
-The sample file `data/access-small.log` has 206 lines: 200 valid entries and
-6 deliberately malformed ones.
+```
+$ ./logflow --config tests/fixtures/configs/wrong-type.yaml
+logflow: configuration error: tests/fixtures/configs/wrong-type.yaml:9: stage 2 (filter): value 'four-hundred' for field 'status' must be a whole number.
+```
+
+**Empty pipeline**
+
+```
+$ ./logflow --config tests/fixtures/configs/empty-pipeline.yaml
+logflow: configuration error: tests/fixtures/configs/empty-pipeline.yaml:6: pipeline 'empty-pipeline' has no stages. Add at least a 'parse' stage.
+```
+
+**Stages in an impossible order**
+
+```
+$ ./logflow --config tests/fixtures/configs/filter-before-parse.yaml
+logflow: configuration error: tests/fixtures/configs/filter-before-parse.yaml:7: stage 1 (filter): this stage needs parsed records, but the source produces text lines. Add a 'parse' stage before it.
+```
+
+Other configuration errors reported the same way:
+
+```
+unknown key 'stage' in 'pipeline' (allowed: name, source, stages, sink).
+'pipeline' is missing the required key 'source'.
+unknown parameter 'strict'. Expected parameters: format.
+parameter 'fields' must be a list, for example fields: [a, b].
+operator '>' is not supported for text field 'path' (use ==, !=, startsWith, endsWith, contains).
+unknown field 'password' (use timestamp, clientIp, method, path, status, bytes or userAgent).
+input file 'data/missing.log' does not exist.
+invalid YAML: end of map flow not found.
+the configuration is empty.
+```
 
 ## Build commands
 
 ```bash
-make              # builds build/logflow
-make run          # builds and runs on data/access-small.log
-make test         # builds and runs the unit tests (CMake + GoogleTest)
-make coverage     # runs the tests with coverage and prints the line-coverage report
-make experiment   # runs the stage-ordering experiment (Release build)
-make clean        # removes build/
-```
-
-With CMake only:
-
-```bash
-cmake -S . -B build/cmake
-cmake --build build/cmake
-ctest --test-dir build/cmake
-./build/cmake/logflow data/access-small.log
+make              # builds build/cmake/logflow
+make run          # runs configs/error-report.yaml and prints out/errors.txt
+make test         # builds and runs all tests
+make coverage     # runs the tests with coverage and prints the report
+make experiment   # runs the stage-ordering experiment from Increment 3
+make clean        # removes build/ and out/
 ```
 
 ## Tests
 
-69 unit and integration tests in `tests/`, written with GoogleTest:
+96 tests in `tests/`, written with GoogleTest:
 
 | Suite                      | Tests | What it covers |
 |----------------------------|------:|----------------|
-| `ParserStageTest`          | 15 | CLF parsing: valid line, missing field, bad timestamp, bad status, empty line, extra whitespace, quoted user agent, query string, and more |
-| `PredicateFilterStageTest` |  7 | pass/drop, `minStatus`, `pathPrefix`, `timeBetween` boundaries, other item types |
-| `ProjectionStageTest`      |  5 | field selection and order, dropped fields, unknown fields |
-| `FileSinkTest`             |  6 | output lines, **output only appears after `close()`**, truncation, open errors |
-| `PipelineBuilderTest`      |  2 | fluent assembly, conditional steps |
-| `PipelineTest`             |  8 | stage order, type changes, lifecycle order of stages and sink, failures |
-| `CommandLineTest`          |  4 | every option, any order, invalid command lines |
-| `IntegrationTest`          |  3 | fixture file through parse, filter and projection into a real output file |
-| `TimestampTest`            |  8 | CLF and ISO 8601 parsing, offsets, leap years |
-| `LogRecordTest`            |  4 | builder, immutability, attributes |
-| `ConsoleSinkTest`          |  3 | output format |
-| `LineFormatTest`           |  2 | `name=value` format and quoting |
-| `FileLineSourceTest`       |  2 | reading lines, missing file |
-
-Stage tests never touch the file system: they create the stage, call `process`, and
-capture the output with the `CollectingEmitter` test double
-(`tests/support/CollectingEmitter.hpp`). The integration test uses the fixture
-`tests/fixtures/mini-access.log` (8 lines, one malformed).
+| `PipelineLoaderTest`       | 13 | **valid configuration, unknown stage type, missing parameter, wrong parameter type, empty pipeline**, impossible order, unknown keys and types, invalid values, invalid YAML, nothing written on error |
+| `StageRegistryTest`        |  5 | built-in entries, item types, duplicates, a new stage type usable without loader changes |
+| `ConfigFilesTest`          |  3 | the three configurations in `configs/` and their outputs |
+| `CompareTest`              |  4 | `field op value` filters on numbers, times and text |
+| `ParserStageTest`          | 15 | CLF parsing |
+| `PredicateFilterStageTest` |  7 | filtering |
+| `ProjectionStageTest`      |  5 | projection |
+| `FileSinkTest`             |  6 | file output and `close()` |
+| `PipelineTest`             |  8 | stage order, lifecycle, failures |
+| `PipelineBuilderTest`      |  2 | fluent assembly |
+| `CommandLineTest`          |  5 | options, `--config` |
+| `IntegrationTest`          |  4 | fixture through full pipelines, from options and from YAML |
+| `TimestampTest`            |  8 | time parsing |
+| `LogRecordTest`            |  4 | the record |
+| `ConsoleSinkTest`          |  3 | console output |
+| `LineFormatTest`           |  2 | output format |
+| `FileLineSourceTest`       |  2 | file input |
 
 ## Coverage
 
-Measured with `make coverage` (clang source-based coverage, `llvm-cov`), over the
-library sources in `include/` and `src/` (test code, experiments and GoogleTest
-excluded; `src/main.cpp` is not linked into the tests):
+Measured with `make coverage` (clang source-based coverage, `llvm-cov`) over the library
+sources in `include/` and `src/`:
 
-| Metric            | v2     | v3 |
-|-------------------|--------|----|
-| **Line coverage** | 99.66% | **99.81%** (532 of 533 lines) |
-| Function coverage | 98.46% | 100.00% (104 of 104 functions) |
-
-The one uncovered line is the console branch of `assemblePipeline`, which writes to the
-real standard output.
+| Metric            | v2     | v3     | v4 |
+|-------------------|--------|--------|----|
+| **Line coverage** | 99.66% | 99.81% | **99.89%** (935 of 936 lines) |
+| Function coverage | 98.46% | 100.00% | 100.00% (175 of 175 functions) |
 
 ## Project layout
 
@@ -128,27 +174,27 @@ real standard output.
 logflow/
 ├── logflow                         launcher script
 ├── Makefile  CMakeLists.txt  CHANGELOG.md  README.md  ARCHITECTURE.md
+├── configs/                        error-report.yaml, api-traffic.yaml, bandwidth-by-client.yaml
 ├── data/access-small.log           sample access log
 ├── include/logflow/
 │   ├── core/                       interfaces, Pipeline, PipelineBuilder
-│   ├── model/                      LogRecord, ProjectedRecord, LogRecordFields
+│   ├── config/                     StageRegistry, PipelineLoader, Params, BuiltinComponents
+│   ├── model/                      LogRecord, ProjectedRecord
 │   ├── stages/                     ParserStage, PredicateFilterStage, Predicates, ProjectionStage
-│   ├── io/                         FileLineSource, ConsoleSink, FileSink, LineFormat
-│   ├── app/                        CommandLine, PipelineAssembly
-│   └── util/Timestamp.hpp
-├── src/                            implementations (.cpp) and main.cpp
-├── tests/                          tests, support/CollectingEmitter.hpp, fixtures/
-├── experiments/OrderingExperiment.cpp
+│   ├── io/                         FileLineSource, ConsoleSink, FileSink
+│   ├── app/                        command line and assembly
+│   └── util/                       timestamps
+├── src/                            implementations and main.cpp
+├── tests/                          tests, fixtures (logs and invalid configurations)
+├── experiments/                    stage-ordering experiment
 └── scripts/coverage.sh
 ```
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and the ordering experiment, and
-[CHANGELOG.md](CHANGELOG.md) for what changed in each increment.
-
 ## Versions
 
-| Tag  | Increment                                                     |
-|------|---------------------------------------------------------------|
-| `v1` | 1: The Skeleton Pipeline                                      |
-| `v2` | 2: Typed Records and the First Real Filter                    |
+| Tag  | Increment |
+|------|-----------|
+| `v1` | 1: The Skeleton Pipeline |
+| `v2` | 2: Typed Records and the First Real Filter |
 | `v3` | 3: Composition: Filtering, Projection and the Pipeline Builder |
+| `v4` | 4: Configuration-Driven Composition and the Stage Registry |

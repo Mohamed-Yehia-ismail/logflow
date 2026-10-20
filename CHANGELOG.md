@@ -1,5 +1,45 @@
 # Changelog
 
+## v4: Configuration-Driven Composition and the Stage Registry
+
+The pipeline is now described in a YAML configuration and built at start-up from a
+registry of components. A new pipeline needs a new configuration file, not a new build.
+
+### Added
+
+| File | Purpose |
+|------|---------|
+| `include/logflow/config/StageRegistry.hpp` | `StageRegistry` and `StageFactory`: type names to factories, with item types |
+| `include/logflow/config/BuiltinComponents.hpp`, `src/config/BuiltinComponents.cpp` | The registration table of all built-in components |
+| `include/logflow/config/PipelineLoader.hpp`, `src/config/PipelineLoader.cpp` | Reads YAML, checks the schema, resolves types, builds the pipeline |
+| `include/logflow/config/Params.hpp`, `src/config/Params.cpp` | Typed, validated access to component parameters |
+| `include/logflow/config/ConfigError.hpp` | Configuration-time error |
+| `include/logflow/config/ItemType.hpp` | Readable names for the item types between components |
+| `src/stages/Predicates.cpp` | `compare(field, op, value)`: the configurable filter condition |
+| `configs/error-report.yaml`, `configs/api-traffic.yaml`, `configs/bandwidth-by-client.yaml` | Three configurations |
+| `tests/PipelineLoaderTest.cpp`, `tests/StageRegistryTest.cpp`, `tests/ConfigFilesTest.cpp`, `tests/CompareTest.cpp` | 25 new tests |
+| `tests/fixtures/configs/*.yaml` | Invalid configurations used for the error-message examples |
+
+### Changed
+
+| File | Change |
+|------|--------|
+| `include/logflow/app/CommandLine.hpp`, `src/app/CommandLine.cpp` | `--config FILE` option |
+| `include/logflow/app/PipelineAssembly.hpp`, `src/app/PipelineAssembly.cpp` | Uses the loader for `--config` |
+| `src/main.cpp` | Reports configuration errors with exit code 3 |
+| `include/logflow/stages/Predicates.hpp` | Declares `compare` and `ComparisonError` |
+| `include/logflow/io/FileSink.hpp` | Creates the output directory if it does not exist |
+| `CMakeLists.txt` | yaml-cpp dependency, new sources and tests |
+| `Makefile`, `logflow` | Build through CMake (the program now needs yaml-cpp) |
+| `tests/CommandLineTest.cpp`, `tests/IntegrationTest.cpp` | Tests for `--config` |
+| `.gitignore` | Ignores `out/` |
+| `README.md`, `ARCHITECTURE.md` | Configuration schema, error-message examples |
+
+### Unchanged
+
+`Pipeline`, `PipelineBuilder`, all interfaces, `ParserStage`, `PredicateFilterStage`,
+`ProjectionStage`, `FileLineSource`, `ConsoleSink`, `LogRecord`.
+
 ## v3: Composition: Filtering, Projection and the Pipeline Builder
 
 Three new stages, a fluent `PipelineBuilder`, and command-line options that decide which

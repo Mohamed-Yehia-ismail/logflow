@@ -1,0 +1,12 @@
+pipeline:
+  name: missing-param
+  source:
+    type: file
+    params: { path: data/access-small.log }
+  stages:
+    - type: parse
+    - type: filter
+      params: { field: status, op: ">=" }
+  sink:
+    type: file
+    params: { path: out/missing-param.txt }

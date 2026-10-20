@@ -63,7 +63,8 @@ Options parseCommandLine(const std::vector<std::string>& args) {
         if (i + 1 >= args.size()) throw UsageError(arg + " needs a value");
         const std::string& value = args[++i];
 
-        if (arg == "--out") options.output = value;
+        if (arg == "--config") options.config = value;
+        else if (arg == "--out") options.output = value;
         else if (arg == "--min-status") options.minStatus = parseInt(arg, value);
         else if (arg == "--path-prefix") options.pathPrefix = value;
         else if (arg == "--since") options.since = parseTime(arg, value);
@@ -71,12 +72,23 @@ Options parseCommandLine(const std::vector<std::string>& args) {
         else if (arg == "--fields") options.fields = parseFields(arg, value);
         else throw UsageError("unknown option " + arg);
     }
+    if (options.config) {
+        // The configuration describes the whole pipeline, so nothing else may be given.
+        if (!options.input.empty() || options.output || options.minStatus || options.pathPrefix ||
+            options.since || options.until || options.fields) {
+            throw UsageError("--config cannot be combined with an input file or other options");
+        }
+        return options;
+    }
     if (options.input.empty()) throw UsageError("no input file given");
     return options;
 }
 
 const char* usageText() {
-    return "Usage: logflow <log-file> [options]\n"
+    return "Usage: logflow --config <pipeline.yaml>\n"
+           "       logflow <log-file> [options]\n"
+           "\n"
+           "  --config FILE         build the pipeline from a YAML configuration (see configs/)\n"
            "\n"
            "Options:\n"
            "  --min-status N        keep records with status >= N\n"

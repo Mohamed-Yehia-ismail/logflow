@@ -29,6 +29,15 @@ TEST(CommandLineTest, AllOptionsInAnyOrder) {
     EXPECT_EQ(o.fields, (std::vector<std::string>{"timestamp", "clientIp", "status"}));
 }
 
+TEST(CommandLineTest, Config) {
+    const Options o = parseCommandLine({"--config", "configs/error-report.yaml"});
+    EXPECT_EQ(o.config, "configs/error-report.yaml");
+    EXPECT_TRUE(o.input.empty());
+    EXPECT_THROW(parseCommandLine({"--config", "c.yaml", "in.log"}), UsageError);
+    EXPECT_THROW(parseCommandLine({"--config", "c.yaml", "--min-status", "400"}), UsageError);
+    EXPECT_THROW(parseCommandLine({"--config"}), UsageError);
+}
+
 TEST(CommandLineTest, Help) {
     EXPECT_TRUE(parseCommandLine({"--help"}).help);
     EXPECT_TRUE(parseCommandLine({"-h"}).help);
