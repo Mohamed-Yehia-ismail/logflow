@@ -15,6 +15,26 @@ std::string quoteIfNeeded(const std::string& value) {
     return quoted + '"';
 }
 
+// Quotes a value and escapes quotes, backslashes and bytes outside printable ASCII.
+std::string quoteEscaped(const std::string& value) {
+    static const char digits[] = "0123456789ABCDEF";
+    std::string quoted = "\"";
+    for (char c : value) {
+        const auto b = static_cast<unsigned char>(c);
+        if (c == '"' || c == '\\') {
+            quoted += '\\';
+            quoted += c;
+        } else if (b < 0x20 || b > 0x7E) {
+            quoted += "\\x";
+            quoted += digits[b >> 4];
+            quoted += digits[b & 0xF];
+        } else {
+            quoted += c;
+        }
+    }
+    return quoted + '"';
+}
+
 }  // namespace
 
 std::string formatLine(const LogRecord& record) {
@@ -33,6 +53,12 @@ std::string formatLine(const ProjectedRecord& record) {
         line += field.first + '=' + quoteIfNeeded(field.second);
     }
     return line;
+}
+
+std::string formatLine(const FailedRecord& record) {
+    return "failedAt=" + formatIso8601(record.timestamp) + " record=" + std::to_string(record.recordNumber) +
+           " stage=" + quoteIfNeeded(record.stageName) + " error=" + quoteEscaped(record.exception) +
+           " raw=" + quoteEscaped(record.rawInput);
 }
 
 }  // namespace logflow

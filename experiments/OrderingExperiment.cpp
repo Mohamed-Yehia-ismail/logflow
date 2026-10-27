@@ -111,14 +111,19 @@ int main(int argc, char* argv[]) {
     }
     std::vector<LogRecord> sampleRecords;
     {
-        std::ostringstream ignored;
-        ParserStage parser(ignored);
+        ParserStage parser;
         struct Into : Emitter<LogRecord> {
             std::vector<LogRecord>& v;
             explicit Into(std::vector<LogRecord>& v) : v(v) {}
             void emit(const LogRecord& r) override { v.push_back(r); }
         } into(sampleRecords);
-        for (const auto& line : sampleLines) parser.process(line, into);
+        for (const auto& line : sampleLines) {
+            try {
+                parser.process(line, into);
+            } catch (const StageException&) {
+                // malformed sample line: not part of the data set
+            }
+        }
     }
     std::vector<LogRecord> records;
     std::vector<std::string> lines;
@@ -181,11 +186,10 @@ int main(int argc, char* argv[]) {
     const auto fromText = [&](bool statusFirst) {
         return [&, statusFirst] {
             Result r;
-            std::ostringstream ignored;
             auto status = counted<LogRecord>(predicates::minStatus(400), r.work);
             auto path = counted<LogRecord>(predicates::pathPrefix("/api"), r.work);
             PipelineBuilder::from(std::make_unique<VectorSource<std::string>>(someLines))
-                .via(std::make_unique<ParserStage>(ignored))
+                .via(std::make_unique<ParserStage>())
                 .via(std::make_unique<PredicateFilterStage<>>(statusFirst ? status : path))
                 .via(std::make_unique<PredicateFilterStage<>>(statusFirst ? path : status))
                 .to(std::make_unique<LineCollector<LogRecord>>(r.output))

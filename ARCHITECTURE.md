@@ -1,5 +1,208 @@
 # LogFlow Architecture
 
+## Increment 5: Error Handling, Validation and the Dead-Letter Channel
+
+### The goal
+
+Until Increment 4, the parser quietly skipped every line it could not read and printed
+one number at the end. That is not an error strategy, it is the absence of one. Now
+error handling is **designed**:
+
+- there is an explicit **error model** (what can fail, and what that means);
+- each stage has a configured **error policy**;
+- failed records can leave the main line on a second, independent path: the
+  **dead-letter channel**;
+- a **ValidationStage** checks the meaning of records against declarative rules;
+- every run ends with a **RunSummary** whose numbers must add up.
+
+**Milestone: the corrupted file `data/access-dirty.log` is processed to the end. Valid
+records reach the main sink, bad records reach the dead-letter sink, and the summary
+counts match exactly.**
+
+### Error model: StageException and PipelineException
+
+| | `StageException` | `PipelineException` |
+|---|---|---|
+| Meaning | one stage could not process **one item** | the **pipeline** cannot continue |
+| Examples | truncated line, invalid timestamp, not UTF-8, line too long, negative byte count, timestamp out of range | invalid configuration (`ConfigError` is a `PipelineException`), input file cannot be read, output cannot be written (disk full), a stage failed under `FAIL_FAST` |
+| Recoverable? | **yes**: the stage's error policy decides what happens to that item, then the next item is processed | **no**: the run stops, everything that was opened is closed, the summary so far is printed, exit code 1 (3 for configuration errors) |
+| Thrown by | stages (`ParserStage`, `ValidationStage`, ...) | sources, sinks, the loader, and the pipeline itself (`FAIL_FAST`) |
+
+The rule that keeps this clean: **a stage never decides what happens to a bad item.**
+It only says what is wrong with it (it throws `StageException` with the reason). What
+to do about it is an architectural decision, taken in the configuration and applied by
+the pipeline. Any other exception (a programming error) is not treated as a data error:
+it stops the run.
+
+### Error policies
+
+Each stage gets an `onError` policy in the configuration (default: `SKIP`):
+
+| Policy | What happens to the failed item | Counted as |
+|--------|----------------------------------|------------|
+| `FAIL_FAST` | the run stops with `PipelineException`, naming the stage and the record number | (run stopped) |
+| `SKIP` | dropped | `skipped` |
+| `DEAD_LETTER` | sent to the dead-letter sink as a `FailedRecord` | `dead-letter` |
+| `RETRY(n)` | tried again up to `n` more times; if it still fails, dead-lettered. Meant for the I/O stages of Increment 6, whose failures can be temporary | `retries`, then `dead-letter` |
+
+```yaml
+stages:
+  - type: parse
+    onError: DEAD_LETTER
+```
+
+The policy is applied in one place, `Pipeline::process`, not in every stage. Each stage
+handles only its own failures: a failure in stage 2 is never seen by stage 1.
+
+### The dead-letter channel
+
+From here on the pipeline is **not a straight line**. There is a second, independent
+output path:
+
+```
+                       main line
+  source ──> parse ──> validate ──> filter ──> project ──> sink  (out/dirty-valid.txt)
+               │           │
+               │ failed    │ failed       (onError: DEAD_LETTER)
+               v           v
+          ┌──────────────────────────┐
+          │      dead-letter pipe     │   FailedRecord(rawInput, stageName,
+          └──────────────────────────┘                exception, timestamp)
+                       │
+                       v
+               dead-letter sink  (out/dead-letter.txt)
+```
+
+A `FailedRecord` carries what is needed to diagnose and replay the item:
+
+| Field | Content |
+|-------|---------|
+| `rawInput` | the original input line, exactly as read |
+| `stageName` | the stage that failed |
+| `exception` | the reason (the `StageException` message) |
+| `timestamp` | when it failed |
+| `recordNumber` | the position of the record in the input file |
+
+The dead-letter sink is a normal sink of `FailedRecord` (`file` or `console`), configured
+next to the main sink. It is opened and closed together with the main sink. A
+configuration that uses `DEAD_LETTER` or `RETRY(n)` without a `deadLetter` sink is
+rejected before any data is read.
+
+```
+failedAt=2026-10-27T15:58:39Z record=10 stage=parse error="line is not valid UTF-8 (byte 0xFF at position 87)" raw="192.0.2.200 - - [...] \"GET /bad-encoding HTTP/1.1\" 200 50 \"-\" \"\xFF\xFE\xFA\""
+```
+
+In `raw`, bytes that are not printable ASCII are written as `\xHH`: the dead-letter file
+stays readable text, and the original bytes are not lost or silently changed.
+
+### ValidationStage: syntax and meaning are separate
+
+`ParserStage` checks **syntax**: is this line an access-log entry? `ValidationStage`
+checks **meaning**: is this entry plausible? A byte count of `-45` is a well-formed
+number (the parser accepts it), but it is not a valid response size (the validator
+rejects it).
+
+The rules are **declarative**, written in the configuration:
+
+```yaml
+- type: validate
+  params:
+    required: [clientIp, method, path]                       # required fields
+    status: 100..599                                         # numeric range
+    bytes: 0..                                               # numeric range (no maximum)
+    timestamp: 2000-01-01T00:00:00Z..2030-12-31T23:59:59Z    # timestamp sanity range
+    clientIp: ip                                             # IP format: ipv4, ipv6 or ip
+  onError: DEAD_LETTER
+```
+
+A record that breaks rules is rejected with **every** broken rule in the message, for
+example `validation failed: bytes -1 is outside 0..; clientIp 'x' is not an IPv4 address`.
+
+### RunSummary
+
+Printed at the end of every run, also when the run stops early:
+
+```
+Run summary: dirty-dead-letter
+  records read           11
+  stage       policy            in    out  filtered  skipped  dead-letter
+  1. parse    DEAD_LETTER      11      6         1        0            4
+  2. validate DEAD_LETTER       6      3         0        0            3
+  records written         3
+  dead-lettered           7
+  elapsed           4.335 ms
+  check: 11 read = 3 written + 1 dropped + 7 dead-lettered  OK
+```
+
+- **filtered**: dropped on purpose, without an error (a filter, a comment line);
+- **skipped**: failed and dropped under `SKIP`;
+- **dead-letter**: failed and sent to the dead-letter sink;
+- **check**: `records read = written + dropped (filtered + skipped) + dead-lettered`.
+
+`RunSummary` is plain data (`StageStats` per stage), separate from `formatSummary`,
+which only prints it. The metrics of Increments 8 and 9 can collect, compare or export
+the same struct without changing the pipeline.
+
+### Chaos test: every error in the corrupted file and the policy that handles it
+
+`data/access-dirty.log` (11 lines: 1 comment, 3 valid records, 7 bad ones) and
+`data/access-empty.log` (0 bytes), run with `configs/dirty-dead-letter.yaml`:
+
+| # | Error in the file | Detected by | Exception | Policy | Result |
+|--:|-------------------|-------------|-----------|--------|--------|
+| 1 | comment line `# Deliberately corrupted ...` | `ParserStage` | none (not a record) | none | `filtered`, not an error |
+| 2 | truncated line (timestamp cut off: `[15/Oct/2026:10:18:`) | `ParserStage` | `StageException`: line does not have the access-log layout | `DEAD_LETTER` | dead-letter file |
+| 3 | truncated line (no byte count, no trailing fields) | `ParserStage` | `StageException`: line does not have the access-log layout | `DEAD_LETTER` | dead-letter file |
+| 4 | negative byte count (`-45`) | `ValidationStage` (`bytes: 0..`) | `StageException`: bytes -45 is outside 0.. | `DEAD_LETTER` | dead-letter file |
+| 5 | timestamp from 1970 | `ValidationStage` (`timestamp: 2000..2030`) | `StageException`: timestamp ... is outside ... | `DEAD_LETTER` | dead-letter file |
+| 6 | timestamp from 2099 | `ValidationStage` (`timestamp: 2000..2030`) | `StageException`: timestamp ... is outside ... | `DEAD_LETTER` | dead-letter file |
+| 7 | non-UTF-8 bytes (`0xFF 0xFE 0xFA`) in the user agent | `ParserStage` (UTF-8 check) | `StageException`: line is not valid UTF-8 (byte 0xFF at position 87) | `DEAD_LETTER` | dead-letter file, bytes kept as `\xFF\xFE\xFA` |
+| 8 | 100 KiB single line (102,400 bytes) | `ParserStage` (`maxLineLength: 8192`), before the regular expression runs | `StageException`: line is 102400 bytes long, the limit is 8192 | `DEAD_LETTER` | dead-letter file |
+| 9 | empty file (`access-empty.log`) | `FileLineSource` | none | none | run completes, 0 records, summary balanced (`configs/empty-input.yaml`) |
+| 10 | input file missing or unreadable | `FileLineSource` | `PipelineException` | (not configurable) | run stops, exit code 1 |
+| 11 | output cannot be written (disk full) | `FileSink` | `PipelineException` | (not configurable) | run stops, exit code 1 |
+
+Result: **3 written + 1 filtered + 7 dead-lettered = 11 read.** The same file with the
+other policies:
+
+| Configuration | Policy | Result |
+|---------------|--------|--------|
+| `configs/dirty-dead-letter.yaml` | `DEAD_LETTER` | 3 valid records in `out/dirty-valid.txt`, 7 in `out/dead-letter.txt` |
+| `configs/dirty-skip.yaml` | `SKIP` | 3 valid records printed, 7 counted as `skipped` |
+| `configs/dirty-fail-fast.yaml` | `FAIL_FAST` | stops at record 4 (the first truncated line), exit code 1 |
+
+Why the 100 KiB line is rejected by size first: the parser uses a regular expression,
+and running it on an unbounded line costs time and stack. A size limit before parsing
+is a cheap guard, and the limit is configurable (`maxLineLength`).
+
+### Design decisions
+
+| Decision | Reason |
+|----------|--------|
+| Stages throw, the pipeline decides | error routing is a topological decision (where does the item go?), not a `try/catch` inside each stage |
+| Policy per stage, in the configuration | a parse error and a validation error may need different handling; changing it needs no rebuild |
+| Default policy `SKIP` | keeps the earlier behaviour of the configurations and the command line; now the skipped items are counted per stage in the summary |
+| Dead-letter sink is a normal `Sink<FailedRecord>` | it reuses the registry, `FileSink` and `ConsoleSink`; no special output code |
+| `rawInput` kept unchanged | a dead-lettered record can be inspected and processed again later |
+| Validation separate from parsing | one stage per concern: syntax in the parser, meaning in the validator, each testable alone |
+| Summary is plain data | Increments 8 and 9 build metrics on it |
+
+### Files added or changed
+
+| File | Role |
+|------|------|
+| `include/logflow/core/PipelineException.hpp` | unrecoverable pipeline error |
+| `include/logflow/core/StageException.hpp` | recoverable per-item error (documented) |
+| `include/logflow/core/ErrorPolicy.hpp`, `src/core/ErrorPolicy.cpp` | `FAIL_FAST`, `SKIP`, `DEAD_LETTER`, `RETRY(n)` |
+| `include/logflow/core/FailedRecord.hpp` | the item on the dead-letter channel |
+| `include/logflow/core/RunSummary.hpp`, `src/core/RunSummary.cpp` | the counts of a run, and how they are printed |
+| `include/logflow/core/Pipeline.hpp`, `src/core/Pipeline.cpp` | applies the policies, dead-letter sink, summary |
+| `include/logflow/stages/ValidationStage.hpp`, `src/stages/ValidationStage.cpp` | declarative validation rules |
+| `src/stages/ParserStage.cpp` | throws `StageException` with the reason; UTF-8 check; line-length limit |
+| `src/config/PipelineLoader.cpp`, `src/config/BuiltinComponents.cpp` | `onError`, `deadLetter`, `validate` |
+| `configs/dirty-*.yaml`, `configs/empty-input.yaml` | chaos-test configurations |
+| `data/access-dirty.log`, `data/access-empty.log` | the corrupted and the empty input |
+
 ## Increment 4: Configuration-Driven Composition and the Stage Registry
 
 ### The goal
@@ -77,6 +280,10 @@ errors, so a typo like `stage:` instead of `stages:` is reported instead of igno
 | stage  | `project` | `fields` (required, a non-empty list of field names) | parsed records | projected records |
 | sink   | `file`    | `path` (text, required; the directory is created) | parsed or projected records | |
 | sink   | `console` | none | parsed or projected records | |
+
+Increment 5 adds `onError` on every stage, an optional `deadLetter` sink next to `sink`,
+the `validate` stage and the `maxLineLength` parameter of `parse`; see
+[Increment 5](#increment-5-error-handling-validation-and-the-dead-letter-channel).
 
 **Filter.** `field` is one of `timestamp`, `clientIp`, `method`, `path`, `status`, `bytes`,
 `userAgent`. The allowed operators and the type of `value` depend on the field:

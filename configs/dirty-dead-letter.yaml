@@ -1,0 +1,30 @@
+# Chaos test with the DEAD_LETTER policy: valid records go to the main output,
+# every bad record goes to the dead-letter file with the reason it failed.
+pipeline:
+  name: dirty-dead-letter
+
+  source:
+    type: file
+    params: { path: data/access-dirty.log }
+
+  stages:
+    - type: parse
+      params: { format: combined, maxLineLength: 8192 }
+      onError: DEAD_LETTER
+
+    - type: validate
+      params:
+        required: [clientIp, method, path]
+        status: 100..599
+        bytes: 0..
+        timestamp: 2000-01-01T00:00:00Z..2030-12-31T23:59:59Z
+        clientIp: ip
+      onError: DEAD_LETTER
+
+  sink:
+    type: file
+    params: { path: out/dirty-valid.txt }
+
+  deadLetter:
+    type: file
+    params: { path: out/dead-letter.txt }

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <vector>
 
@@ -12,10 +13,13 @@
 namespace logflow {
 namespace {
 
-// One configured component: its type name and its parameters.
+// One configured component: its type name, its parameters and, for a stage, its
+// error policy as written (onError).
 struct ComponentSpec {
     std::string type;
     Params params;
+    std::optional<std::string> onError;
+    int onErrorLine = 0;
 };
 
 class Reader {
@@ -45,8 +49,9 @@ public:
         return child;
     }
 
-    ComponentSpec component(const YAML::Node& node, const std::string& label) const {
-        expectKeys(node, label, {"type", "params"});
+    ComponentSpec component(const YAML::Node& node, const std::string& label, bool isStage = false) const {
+        expectKeys(node, label, isStage ? std::vector<std::string>{"type", "params", "onError"}
+                                        : std::vector<std::string>{"type", "params"});
         const YAML::Node type = required(node, "type", label);
         if (!type.IsScalar() || type.Scalar().empty()) fail(type, label + ": 'type' must be a name.");
 
@@ -56,7 +61,13 @@ public:
             if (!params.IsMap() && !params.IsNull()) fail(params, description + ": 'params' must be a mapping.");
             for (const auto& entry : params) values.emplace(entry.first.as<std::string>(), value(entry.second, description));
         }
-        return ComponentSpec{type.Scalar(), Params(file_, lineOf(node), description, std::move(values))};
+        ComponentSpec spec{type.Scalar(), Params(file_, lineOf(node), description, std::move(values)), {}, 0};
+        if (const YAML::Node onError = node["onError"]) {
+            if (!onError.IsScalar()) fail(onError, description + ": 'onError' must be a policy name.");
+            spec.onError = onError.Scalar();
+            spec.onErrorLine = lineOf(onError);
+        }
+        return spec;
     }
 
     static std::string join(const std::vector<std::string>& names) {
@@ -133,7 +144,7 @@ LoadedPipeline PipelineLoader::loadString(const std::string& yaml, const std::st
     if (!root || root.IsNull()) throw ConfigError(sourceName + ": the configuration is empty.");
     reader.expectKeys(root, "the configuration", {"pipeline"});
     const YAML::Node pipeline = reader.required(root, "pipeline", "the configuration");
-    reader.expectKeys(pipeline, "'pipeline'", {"name", "source", "stages", "sink"});
+    reader.expectKeys(pipeline, "'pipeline'", {"name", "source", "stages", "sink", "deadLetter"});
 
     const YAML::Node nameNode = pipeline["name"];
     const std::string name = nameNode && nameNode.IsScalar() ? nameNode.Scalar() : "unnamed";
@@ -146,9 +157,11 @@ LoadedPipeline PipelineLoader::loadString(const std::string& yaml, const std::st
     }
     std::vector<ComponentSpec> stages;
     for (std::size_t i = 0; i < stagesNode.size(); ++i) {
-        stages.push_back(reader.component(stagesNode[i], "stage " + std::to_string(i + 1)));
+        stages.push_back(reader.component(stagesNode[i], "stage " + std::to_string(i + 1), true));
     }
     const ComponentSpec sink = reader.component(reader.required(pipeline, "sink", "'pipeline'"), "sink");
+    std::optional<ComponentSpec> deadLetter;
+    if (const YAML::Node node = pipeline["deadLetter"]) deadLetter = reader.component(node, "deadLetter");
 
     // 2. Resolve every type name and check that the item types fit together.
     const StageRegistry::SourceEntry* sourceEntry = registry_.findSource(source.type);
@@ -180,10 +193,44 @@ LoadedPipeline PipelineLoader::loadString(const std::string& yaml, const std::st
         sink.params.fail("", "this sink cannot write " + std::string(current.name) + ".");
     }
 
+    // Error policies, and the dead-letter sink they may need.
+    std::vector<StageOptions> stageOptions;
+    for (std::size_t i = 0; i < stages.size(); ++i) {
+        const ComponentSpec& stage = stages[i];
+        StageOptions options{stage.type, ErrorPolicy::skip()};
+        if (stage.onError) {
+            const std::optional<ErrorPolicy> policy = ErrorPolicy::parse(*stage.onError);
+            if (!policy) {
+                throw ConfigError(sourceName + ":" + std::to_string(stage.onErrorLine) + ": stage " +
+                                  std::to_string(i + 1) + " (" + stage.type + "): unknown error policy '" +
+                                  *stage.onError + "' (use FAIL_FAST, SKIP, DEAD_LETTER or RETRY(n) with n from 1 to 10).");
+            }
+            options.onError = *policy;
+        }
+        if (options.onError.usesDeadLetter() && !deadLetter) {
+            throw ConfigError(sourceName + ":" + std::to_string(stage.onErrorLine) + ": stage " +
+                              std::to_string(i + 1) + " (" + stage.type + "): onError " + options.onError.name() +
+                              " needs a dead-letter sink, but the pipeline has none. Add for example "
+                              "'deadLetter: { type: file, params: { path: out/dead-letter.txt } }' under 'pipeline'.");
+        }
+        stageOptions.push_back(options);
+    }
+    const StageRegistry::SinkEntry* deadLetterEntry = nullptr;
+    if (deadLetter) {
+        const std::vector<StageRegistry::SinkEntry>* variants = registry_.findSinks(deadLetter->type);
+        if (!variants) deadLetter->params.fail("", unknownType("sink", deadLetter->type, registry_.sinkNames()));
+        for (const StageRegistry::SinkEntry& entry : *variants) {
+            if (entry.setDeadLetterOn) deadLetterEntry = &entry;
+        }
+        if (!deadLetterEntry) deadLetter->params.fail("", "this sink cannot write failed records.");
+    }
+
     // 3. Build: each factory validates its parameters and creates its component.
     Pipeline built = sourceEntry->create(source.params);
-    for (std::size_t i = 0; i < stages.size(); ++i) stageEntries[i]->addTo(built, stages[i].params);
+    for (std::size_t i = 0; i < stages.size(); ++i) stageEntries[i]->addTo(built, stages[i].params, stageOptions[i]);
     sinkEntry->setOn(built, sink.params);
+    if (deadLetterEntry) deadLetterEntry->setDeadLetterOn(built, deadLetter->params);
+    built.setName(name);
     return LoadedPipeline{name, std::move(built)};
 }
 

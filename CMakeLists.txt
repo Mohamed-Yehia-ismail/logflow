@@ -45,7 +45,9 @@ add_library(logflow_lib
     src/config/BuiltinComponents.cpp
     src/config/Params.cpp
     src/config/PipelineLoader.cpp
+    src/core/ErrorPolicy.cpp
     src/core/Pipeline.cpp
+    src/core/RunSummary.cpp
     src/io/FileLineSource.cpp
     src/io/LineFormat.cpp
     src/model/LogRecord.cpp
@@ -53,6 +55,7 @@ add_library(logflow_lib
     src/stages/ParserStage.cpp
     src/stages/Predicates.cpp
     src/stages/ProjectionStage.cpp
+    src/stages/ValidationStage.cpp
     src/util/Timestamp.cpp
 )
 target_include_directories(logflow_lib PUBLIC include)
@@ -81,10 +84,12 @@ if(LOGFLOW_BUILD_TESTS)
     endif()
 
     add_executable(logflow_tests
+        tests/ChaosTest.cpp
         tests/CommandLineTest.cpp
         tests/CompareTest.cpp
         tests/ConfigFilesTest.cpp
         tests/ConsoleSinkTest.cpp
+        tests/ErrorPolicyTest.cpp
         tests/FileLineSourceTest.cpp
         tests/FileSinkTest.cpp
         tests/IntegrationTest.cpp
@@ -96,8 +101,10 @@ if(LOGFLOW_BUILD_TESTS)
         tests/PipelineTest.cpp
         tests/PredicateFilterStageTest.cpp
         tests/ProjectionStageTest.cpp
+        tests/RunSummaryTest.cpp
         tests/StageRegistryTest.cpp
         tests/TimestampTest.cpp
+        tests/ValidationStageTest.cpp
     )
     target_include_directories(logflow_tests PRIVATE tests)
     target_compile_definitions(logflow_tests PRIVATE

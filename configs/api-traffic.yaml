@@ -9,6 +9,7 @@ pipeline:
   stages:
     - type: parse
       params: { format: clf }
+      onError: SKIP
 
     - type: filter
       params: { field: path, op: startsWith, value: /api }

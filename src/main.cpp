@@ -1,8 +1,9 @@
-// Entry point. Reads the arguments, assembles the pipeline, runs it.
-// No business logic lives here.
+// Entry point. Reads the arguments, assembles the pipeline, runs it and prints the
+// run summary. No business logic lives here.
 
 #include <exception>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -11,6 +12,7 @@
 #include "logflow/config/ConfigError.hpp"
 
 int main(int argc, char* argv[]) {
+    std::optional<logflow::Pipeline> pipeline;
     try {
         const logflow::Options options =
             logflow::parseCommandLine(std::vector<std::string>(argv + 1, argv + argc));
@@ -19,9 +21,9 @@ int main(int argc, char* argv[]) {
             return 0;
         }
 
-        logflow::Pipeline pipeline = logflow::assemblePipeline(options);
+        pipeline.emplace(logflow::assemblePipeline(options));
 
-        pipeline.run();
+        std::cerr << logflow::formatSummary(pipeline->run());
     } catch (const logflow::UsageError& e) {
         std::cerr << "logflow: " << e.what() << "\n\n" << logflow::usageText();
         return 2;
@@ -29,6 +31,8 @@ int main(int argc, char* argv[]) {
         std::cerr << "logflow: configuration error: " << e.what() << '\n';
         return 3;
     } catch (const std::exception& e) {
+        // The run stopped: show how far it got.
+        if (pipeline) std::cerr << logflow::formatSummary(pipeline->lastSummary());
         std::cerr << "logflow: " << e.what() << '\n';
         return 1;
     }

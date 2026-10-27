@@ -1,5 +1,41 @@
 # Changelog
 
+## v5: Error Handling, Validation and the Dead-Letter Channel
+
+Bad records are no longer skipped silently. Each stage has a configured error policy,
+failed records can be routed to a separate dead-letter sink, a validation stage checks
+records against declarative rules, and every run prints a summary whose counts must
+balance. The deliberately corrupted file `data/access-dirty.log` runs to the end.
+
+### Added
+
+| File | Purpose |
+|------|---------|
+| `include/logflow/core/PipelineException.hpp` | Unrecoverable error: the run stops |
+| `include/logflow/core/ErrorPolicy.hpp`, `src/core/ErrorPolicy.cpp` | `FAIL_FAST`, `SKIP`, `DEAD_LETTER`, `RETRY(n)` |
+| `include/logflow/core/FailedRecord.hpp` | `FailedRecord(rawInput, stageName, exception, timestamp)` for the dead-letter channel |
+| `include/logflow/core/RunSummary.hpp`, `src/core/RunSummary.cpp` | Counts per run and per stage, elapsed time, balance check |
+| `include/logflow/stages/ValidationStage.hpp`, `src/stages/ValidationStage.cpp` | Declarative rules: required fields, numeric ranges, timestamp range, IP format |
+| `configs/dirty-dead-letter.yaml`, `configs/dirty-skip.yaml`, `configs/dirty-fail-fast.yaml`, `configs/empty-input.yaml` | Chaos-test configurations |
+| `data/access-dirty.log`, `data/access-empty.log` | Corrupted and empty input |
+| `tests/ChaosTest.cpp`, `tests/ValidationStageTest.cpp`, `tests/ErrorPolicyTest.cpp`, `tests/RunSummaryTest.cpp` | New test suites |
+
+### Changed
+
+| File | Change |
+|------|--------|
+| `include/logflow/core/Pipeline.hpp`, `src/core/Pipeline.cpp` | Applies the error policy of each stage, dead-letter sink, `run()` returns the `RunSummary` |
+| `include/logflow/core/PipelineBuilder.hpp` | `via(stage, options)`: stage name and error policy |
+| `include/logflow/stages/ParserStage.hpp`, `src/stages/ParserStage.cpp` | Throws `StageException` with the reason instead of counting silently; UTF-8 check; `maxLineLength`; comment lines; signed byte counts |
+| `include/logflow/config/ConfigError.hpp` | Now a `PipelineException` |
+| `src/config/PipelineLoader.cpp` | `onError` per stage, `deadLetter` sink, checks that a dead-letter sink exists when needed |
+| `src/config/BuiltinComponents.cpp` | `validate` stage, `maxLineLength`, dead-letter sinks `file` and `console` |
+| `include/logflow/io/LineFormat.hpp`, `src/io/LineFormat.cpp` | Dead-letter line format with escaped raw bytes |
+| `src/io/FileLineSource.cpp`, `include/logflow/io/FileSink.hpp` | Throw `PipelineException`; write errors (disk full) detected |
+| `src/main.cpp` | Prints the run summary, also when the run stops |
+| `configs/*.yaml` | Explicit `onError: SKIP` on the parse stage |
+| `ARCHITECTURE.md` | Increment 5: error model, policies, dead-letter diagram, error-to-policy table |
+
 ## v4: Configuration-Driven Composition and the Stage Registry
 
 The pipeline is now described in a YAML configuration and built at start-up from a

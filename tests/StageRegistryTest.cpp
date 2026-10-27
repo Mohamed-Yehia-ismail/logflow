@@ -20,9 +20,9 @@ public:
 TEST(StageRegistryTest, BuiltinComponentsAreRegistered) {
     const StageRegistry registry = builtinRegistry();
     EXPECT_EQ(registry.sourceNames(), (std::vector<std::string>{"file"}));
-    EXPECT_EQ(registry.stageNames(), (std::vector<std::string>{"filter", "parse", "project"}));
+    EXPECT_EQ(registry.stageNames(), (std::vector<std::string>{"filter", "parse", "project", "validate"}));
     EXPECT_EQ(registry.sinkNames(), (std::vector<std::string>{"console", "file"}));
-    EXPECT_EQ(registry.findSinks("file")->size(), 2u);  // for parsed and for projected records
+    EXPECT_EQ(registry.findSinks("file")->size(), 3u);  // for parsed, projected and failed records
     EXPECT_EQ(registry.findStage("nope"), nullptr);
 }
 

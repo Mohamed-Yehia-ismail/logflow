@@ -1,10 +1,12 @@
 #include "logflow/stages/ParserStage.hpp"
 
 #include <cctype>
+#include <optional>
 #include <regex>
 #include <sstream>
 #include <vector>
 
+#include "logflow/core/StageException.hpp"
 #include "logflow/util/Timestamp.hpp"
 
 namespace logflow {
@@ -44,49 +46,101 @@ const std::regex& lineFormat() {
     return format;
 }
 
+// The position of the first byte that is not part of valid UTF-8, or npos.
+std::size_t firstInvalidUtf8(const std::string& s) {
+    std::size_t i = 0;
+    while (i < s.size()) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        std::size_t length = 0;
+        unsigned char min = 0x80;  // smallest valid second byte (excludes overlong forms)
+        unsigned char max = 0xBF;
+        if (c < 0x80) {
+            length = 1;
+        } else if (c >= 0xC2 && c <= 0xDF) {
+            length = 2;
+        } else if (c >= 0xE0 && c <= 0xEF) {
+            length = 3;
+            if (c == 0xE0) min = 0xA0;
+            if (c == 0xED) max = 0x9F;  // no UTF-16 surrogates
+        } else if (c >= 0xF0 && c <= 0xF4) {
+            length = 4;
+            if (c == 0xF0) min = 0x90;
+            if (c == 0xF4) max = 0x8F;  // nothing above U+10FFFF
+        } else {
+            return i;
+        }
+        if (i + length > s.size()) return i;
+        for (std::size_t k = 1; k < length; ++k) {
+            const unsigned char next = static_cast<unsigned char>(s[i + k]);
+            const unsigned char low = k == 1 ? min : 0x80;
+            const unsigned char high = k == 1 ? max : 0xBF;
+            if (next < low || next > high) return i;
+        }
+        i += length;
+    }
+    return std::string::npos;
+}
+
+std::string hexByte(char c) {
+    static const char digits[] = "0123456789ABCDEF";
+    const auto b = static_cast<unsigned char>(c);
+    return std::string("0x") + digits[b >> 4] + digits[b & 0xF];
+}
+
+[[noreturn]] void reject(const std::string& reason) { throw StageException(reason); }
+
 }  // namespace
 
-ParserStage::ParserStage(std::ostream& report) : report_(report) {}
+ParserStage::ParserStage(std::size_t maxLineLength) : maxLineLength_(maxLineLength) {}
 
 void ParserStage::process(const std::string& line, Emitter<LogRecord>& out) {
-    std::optional<LogRecord> record = parse(line);
-    if (!record) {
-        ++malformed_;
-        return;
-    }
-    ++parsed_;
-    out.emit(*record);
-}
-
-void ParserStage::close() {
-    report_ << "Malformed lines skipped: " << malformed_ << '\n';
-}
-
-std::optional<LogRecord> ParserStage::parse(const std::string& line) {
     const std::string text = trim(line);
+    if (!text.empty() && text[0] == '#') return;  // a comment, not a record
+    LogRecord record = parse(line);
+    ++parsed_;
+    out.emit(record);
+}
+
+LogRecord ParserStage::parse(const std::string& line) const {
+    // Cheap checks first: the regular expression is never run on an oversized line.
+    if (line.size() > maxLineLength_) {
+        reject("line is " + std::to_string(line.size()) + " bytes long, the limit is " +
+               std::to_string(maxLineLength_));
+    }
+    const std::size_t badByte = firstInvalidUtf8(line);
+    if (badByte != std::string::npos) {
+        reject("line is not valid UTF-8 (byte " + hexByte(line[badByte]) + " at position " +
+               std::to_string(badByte + 1) + ")");
+    }
+    const std::string text = trim(line);
+    if (text.empty()) reject("empty line");
+
     std::smatch m;
-    if (text.empty() || !std::regex_match(text, m, lineFormat())) return std::nullopt;
+    if (!std::regex_match(text, m, lineFormat())) {
+        reject("line does not have the access-log layout (truncated or missing fields)");
+    }
 
     const std::optional<Timestamp> timestamp = parseClfTimestamp(m[4].str());
-    if (!timestamp) return std::nullopt;
+    if (!timestamp) reject("invalid timestamp '" + m[4].str() + "'");
 
     // "METHOD path PROTOCOL"
     std::istringstream request(m[5].str());
     std::vector<std::string> parts;
     for (std::string part; request >> part;) parts.push_back(part);
     if (parts.size() != 3 || !allUpper(parts[0]) || parts[2].rfind("HTTP/", 0) != 0) {
-        return std::nullopt;
+        reject("invalid request '" + m[5].str() + "'");
     }
 
     const std::string status = m[6].str();
-    if (status.size() != 3 || !allDigits(status)) return std::nullopt;
+    if (status.size() != 3 || !allDigits(status)) reject("invalid status '" + status + "'");
     const int statusCode = std::stoi(status);
-    if (statusCode < 100 || statusCode > 599) return std::nullopt;
+    if (statusCode < 100 || statusCode > 599) reject("invalid status '" + status + "'");
 
     const std::string bytes = m[7].str();
     long long byteCount = 0;
     if (bytes != "-") {
-        if (!allDigits(bytes) || bytes.size() > 18) return std::nullopt;
+        const std::string digits = bytes[0] == '-' ? bytes.substr(1) : bytes;
+        if (!allDigits(digits) || digits.size() > 18) reject("invalid byte count '" + bytes + "'");
         byteCount = std::stoll(bytes);
     }
 

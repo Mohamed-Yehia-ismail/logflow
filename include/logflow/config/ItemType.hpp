@@ -3,6 +3,7 @@
 #include <string>
 #include <typeindex>
 
+#include "logflow/core/FailedRecord.hpp"
 #include "logflow/model/LogRecord.hpp"
 #include "logflow/model/ProjectedRecord.hpp"
 
@@ -34,6 +35,10 @@ struct ItemTypeName<LogRecord> {
 template <>
 struct ItemTypeName<ProjectedRecord> {
     static constexpr const char* value = "projected records";
+};
+template <>
+struct ItemTypeName<FailedRecord> {
+    static constexpr const char* value = "failed records";
 };
 
 template <typename T>

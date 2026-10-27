@@ -1,0 +1,15 @@
+# Chaos test with the FAIL_FAST policy: the first bad record stops the run.
+pipeline:
+  name: dirty-fail-fast
+
+  source:
+    type: file
+    params: { path: data/access-dirty.log }
+
+  stages:
+    - type: parse
+      params: { format: combined }
+      onError: FAIL_FAST
+
+  sink:
+    type: console

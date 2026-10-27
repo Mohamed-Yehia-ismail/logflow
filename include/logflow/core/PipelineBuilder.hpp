@@ -34,12 +34,12 @@ public:
 template <typename T>
 class PipelineBuilder::Step {
 public:
-    // Appends a stage that accepts T.
+    // Appends a stage that accepts T, with its name and error policy.
     template <typename S>
-    Step<typename S::OutputType> via(std::unique_ptr<S> stage) && {
+    Step<typename S::OutputType> via(std::unique_ptr<S> stage, StageOptions options = {}) && {
         static_assert(std::is_same_v<typename S::InputType, T>,
                       "stage input type must match the output type of the previous component");
-        pipeline_.addStage(std::move(stage));
+        pipeline_.addStage(std::move(stage), std::move(options));
         return Step<typename S::OutputType>(std::move(pipeline_));
     }
 

@@ -1,0 +1,19 @@
+# An empty input file: the run completes with zero records.
+pipeline:
+  name: empty-input
+
+  source:
+    type: file
+    params: { path: data/access-empty.log }
+
+  stages:
+    - type: parse
+      onError: DEAD_LETTER
+
+  sink:
+    type: file
+    params: { path: out/empty-valid.txt }
+
+  deadLetter:
+    type: file
+    params: { path: out/empty-dead-letter.txt }

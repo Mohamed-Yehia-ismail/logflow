@@ -5,6 +5,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -35,11 +36,12 @@ public:
     struct StageEntry {
         ItemType input;
         ItemType output;
-        std::function<void(Pipeline&, const Params&)> addTo;
+        std::function<void(Pipeline&, const Params&, const StageOptions&)> addTo;
     };
     struct SinkEntry {
         ItemType input;
         std::function<void(Pipeline&, const Params&)> setOn;
+        std::function<void(Pipeline&, const Params&)> setDeadLetterOn;  // only for sinks of failed records
     };
 
     template <typename S>
@@ -54,22 +56,27 @@ public:
         if (stages_.count(name)) throw std::logic_error("stage type '" + name + "' registered twice");
         stages_.emplace(name, StageEntry{ItemType::of<typename S::InputType>(),
                                          ItemType::of<typename S::OutputType>(),
-                                         [factory](Pipeline& pipeline, const Params& p) {
-                                             pipeline.addStage(factory(p));
+                                         [factory](Pipeline& pipeline, const Params& p, const StageOptions& o) {
+                                             pipeline.addStage(factory(p), o);
                                          }});
     }
 
     // A sink name may be registered once per input type (for example "file" for
-    // parsed records and for projected records).
+    // parsed records and for projected records). A sink of FailedRecord can also be
+    // the dead-letter sink.
     template <typename S>
     void addSink(const std::string& name, StageFactory<S> factory) {
         const ItemType input = ItemType::of<typename S::InputType>();
         for (const SinkEntry& entry : sinks_[name]) {
             if (entry.input == input) throw std::logic_error("sink type '" + name + "' registered twice");
         }
-        sinks_[name].push_back(SinkEntry{input, [factory](Pipeline& pipeline, const Params& p) {
-                                             pipeline.setSink(factory(p));
-                                         }});
+        SinkEntry entry{input, [factory](Pipeline& pipeline, const Params& p) { pipeline.setSink(factory(p)); }, {}};
+        if constexpr (std::is_same_v<typename S::InputType, FailedRecord>) {
+            entry.setDeadLetterOn = [factory](Pipeline& pipeline, const Params& p) {
+                pipeline.setDeadLetterSink(factory(p));
+            };
+        }
+        sinks_[name].push_back(std::move(entry));
     }
 
     const SourceEntry* findSource(const std::string& name) const { return find(sources_, name); }

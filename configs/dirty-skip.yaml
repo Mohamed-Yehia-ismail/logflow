@@ -1,0 +1,22 @@
+# Chaos test with the SKIP policy: bad records are dropped and only counted.
+pipeline:
+  name: dirty-skip
+
+  source:
+    type: file
+    params: { path: data/access-dirty.log }
+
+  stages:
+    - type: parse
+      params: { format: combined }
+      onError: SKIP
+
+    - type: validate
+      params:
+        status: 100..599
+        bytes: 0..
+        timestamp: 2000-01-01T00:00:00Z..2030-12-31T23:59:59Z
+      onError: SKIP
+
+  sink:
+    type: console

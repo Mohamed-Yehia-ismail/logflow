@@ -2,8 +2,9 @@
 
 #include <gtest/gtest.h>
 
-#include <sstream>
 #include <string>
+
+#include "logflow/core/StageException.hpp"
 
 #include "logflow/util/Timestamp.hpp"
 #include "support/CollectingEmitter.hpp"
@@ -26,8 +27,20 @@ protected:
         return out.items.size() - before;
     }
 
-    std::ostringstream report;
-    ParserStage stage{report};
+    // Feeds a line that must be rejected; returns the reason given.
+    std::string rejected(const std::string& line) {
+        const std::size_t before = out.items.size();
+        try {
+            stage.process(line, out);
+        } catch (const StageException& e) {
+            EXPECT_EQ(out.items.size(), before) << "nothing may be emitted for a rejected line";
+            return e.what();
+        }
+        ADD_FAILURE() << "line was not rejected: " << line;
+        return "";
+    }
+
+    ParserStage stage;
     CollectingEmitter<LogRecord> out;
 };
 
@@ -46,22 +59,25 @@ TEST_F(ParserStageTest, ValidLineIsParsedIntoAllFields) {
     EXPECT_EQ(r.attribute("referer"), "https://www.example.com/");
     EXPECT_EQ(r.raw(), kValidLine);
     EXPECT_EQ(stage.parsedCount(), 1u);
-    EXPECT_EQ(stage.malformedCount(), 0u);
 }
 
 // 2. Missing field
-TEST_F(ParserStageTest, LineWithMissingFieldIsSkippedAndCounted) {
+TEST_F(ParserStageTest, LineWithMissingFieldIsRejected) {
     // No byte count after the status code.
-    EXPECT_EQ(feed(R"(192.0.2.14 - - [01/Sep/2026:08:41:07 +0000] "GET /index.html HTTP/1.1" 200)"), 0u);
+    EXPECT_EQ(rejected(R"(192.0.2.14 - - [01/Sep/2026:08:41:07 +0000] "GET /index.html HTTP/1.1" 200)"),
+              "line does not have the access-log layout (truncated or missing fields)");
     // No request line at all.
-    EXPECT_EQ(feed(R"(192.0.2.14 - - [01/Sep/2026:08:41:07 +0000] 200 512)"), 0u);
+    rejected(R"(192.0.2.14 - - [01/Sep/2026:08:41:07 +0000] 200 512)");
     // Request line without a protocol.
-    EXPECT_EQ(feed(R"(192.0.2.14 - - [01/Sep/2026:08:41:07 +0000] "GET /index.html" 200 512)"), 0u);
-    EXPECT_EQ(stage.malformedCount(), 3u);
+    EXPECT_EQ(rejected(R"(192.0.2.14 - - [01/Sep/2026:08:41:07 +0000] "GET /index.html" 200 512)"),
+              "invalid request 'GET /index.html'");
+    // Truncated in the middle of the timestamp.
+    rejected("192.0.2.44 - - [15/Oct/2026:10:18:");
+    EXPECT_EQ(stage.parsedCount(), 0u);
 }
 
 // 3. Malformed timestamp
-TEST_F(ParserStageTest, LineWithMalformedTimestampIsSkippedAndCounted) {
+TEST_F(ParserStageTest, LineWithMalformedTimestampIsRejected) {
     const std::string bad[] = {
         R"(192.0.2.7 - - [31/Sep/2026:09:12:44 +0000] "GET / HTTP/1.1" 200 5120)",   // no 31st
         R"(192.0.2.7 - - [01/Foo/2026:09:12:44 +0000] "GET / HTTP/1.1" 200 5120)",   // month
@@ -69,27 +85,24 @@ TEST_F(ParserStageTest, LineWithMalformedTimestampIsSkippedAndCounted) {
         R"(192.0.2.7 - - [2026-09-01T09:12:44Z] "GET / HTTP/1.1" 200 5120)",         // format
         R"(192.0.2.7 - - [01/Sep/2026:09:12:44] "GET / HTTP/1.1" 200 5120)",         // no zone
     };
-    for (const std::string& line : bad) EXPECT_EQ(feed(line), 0u) << line;
-    EXPECT_EQ(stage.malformedCount(), 5u);
+    for (const std::string& line : bad) EXPECT_EQ(rejected(line).rfind("invalid timestamp", 0), 0u) << line;
 }
 
 // 4. Malformed status code
-TEST_F(ParserStageTest, LineWithMalformedStatusIsSkippedAndCounted) {
+TEST_F(ParserStageTest, LineWithMalformedStatusIsRejected) {
     const std::string bad[] = {
         R"(192.0.2.7 - - [01/Sep/2026:09:40:02 +0000] "GET /cart HTTP/1.1" 2OO 7781)",  // letters
         R"(192.0.2.7 - - [01/Sep/2026:09:40:02 +0000] "GET /cart HTTP/1.1" 999 7781)",  // range
         R"(192.0.2.7 - - [01/Sep/2026:09:40:02 +0000] "GET /cart HTTP/1.1" 20 7781)",   // length
         R"(192.0.2.7 - - [01/Sep/2026:09:40:02 +0000] "GET /cart HTTP/1.1" - 7781)",    // dash
     };
-    for (const std::string& line : bad) EXPECT_EQ(feed(line), 0u) << line;
-    EXPECT_EQ(stage.malformedCount(), 4u);
+    for (const std::string& line : bad) EXPECT_EQ(rejected(line).rfind("invalid status", 0), 0u) << line;
 }
 
 // 5. Empty line
-TEST_F(ParserStageTest, EmptyOrBlankLineIsSkippedAndCounted) {
-    EXPECT_EQ(feed(""), 0u);
-    EXPECT_EQ(feed("   \t  "), 0u);
-    EXPECT_EQ(stage.malformedCount(), 2u);
+TEST_F(ParserStageTest, EmptyOrBlankLineIsRejected) {
+    EXPECT_EQ(rejected(""), "empty line");
+    EXPECT_EQ(rejected("   \t  "), "empty line");
     EXPECT_EQ(stage.parsedCount(), 0u);
 }
 
@@ -146,12 +159,55 @@ TEST_F(ParserStageTest, DashForBytesMeansZero) {
     EXPECT_EQ(out.items[0].bytes(), 0);
 }
 
-TEST_F(ParserStageTest, InvalidBytesOrRequestIsSkipped) {
-    EXPECT_EQ(feed(R"(192.0.2.7 - - [01/Sep/2026:09:40:02 +0000] "GET / HTTP/1.1" 200 12kb)"), 0u);
-    EXPECT_EQ(feed(R"(192.0.2.7 - - [01/Sep/2026:09:40:02 +0000] "get / HTTP/1.1" 200 12)"), 0u);
-    EXPECT_EQ(feed(R"(192.0.2.7 - - [01/Sep/2026:09:40:02 +0000] "GET / FTP/1.1" 200 12)"), 0u);
-    EXPECT_EQ(feed("this line is not an access log entry"), 0u);
-    EXPECT_EQ(stage.malformedCount(), 4u);
+TEST_F(ParserStageTest, InvalidBytesOrRequestIsRejected) {
+    EXPECT_EQ(rejected(R"(192.0.2.7 - - [01/Sep/2026:09:40:02 +0000] "GET / HTTP/1.1" 200 12kb)"),
+              "invalid byte count '12kb'");
+    rejected(R"(192.0.2.7 - - [01/Sep/2026:09:40:02 +0000] "get / HTTP/1.1" 200 12)");
+    rejected(R"(192.0.2.7 - - [01/Sep/2026:09:40:02 +0000] "GET / FTP/1.1" 200 12)");
+    rejected("this line is not an access log entry");
+}
+
+// The parser checks syntax only: a negative count is a number, ValidationStage judges it.
+TEST_F(ParserStageTest, NegativeByteCountIsParsed) {
+    ASSERT_EQ(feed(R"(192.0.2.55 - - [15/Oct/2026:10:20:10 +0000] "GET /download HTTP/1.1" 200 -45)"), 1u);
+    EXPECT_EQ(out.items[0].bytes(), -45);
+}
+
+TEST_F(ParserStageTest, LineThatIsNotUtf8IsRejectedWithThePosition) {
+    const std::string line =
+        "192.0.2.200 - - [15/Oct/2026:10:22:00 +0000] \"GET / HTTP/1.1\" 200 50 \"-\" \"\xFF\xFE\xFA\"";
+    EXPECT_EQ(rejected(line), "line is not valid UTF-8 (byte 0xFF at position 75)");
+    // Overlong encoding, surrogate, truncated sequence.
+    rejected(kValidLine + " \xC0\xAF");
+    rejected(kValidLine + " \xED\xA0\x80");
+    rejected(kValidLine + " \xE2\x82");
+}
+
+TEST_F(ParserStageTest, ValidMultiByteUtf8IsAccepted) {
+    ASSERT_EQ(feed(R"(192.0.2.7 - - [01/Sep/2026:09:40:02 +0000] "GET / HTTP/1.1" 200 12 "-" "Bot )"
+                   "\xC3\xA7\xE2\x82\xAC\xF0\x9F\x98\x80\""),
+              1u);
+}
+
+TEST_F(ParserStageTest, LineLongerThanTheLimitIsRejectedBeforeParsing) {
+    ParserStage small(100);
+    EXPECT_THROW(small.process(kValidLine + std::string(200, 'A'), out), StageException);
+
+    const std::string huge = kValidLine.substr(0, kValidLine.size() - 1) + std::string(102400, 'A') + "\"";
+    EXPECT_EQ(rejected(huge).rfind("line is " + std::to_string(huge.size()) + " bytes long", 0), 0u);
+}
+
+TEST_F(ParserStageTest, LineJustUnderTheDefaultLimitIsParsed) {
+    const std::string longAgent(ParserStage::kDefaultMaxLineLength - kValidLine.size(), 'A');
+    const std::string line = kValidLine.substr(0, kValidLine.size() - 1) + longAgent + "\"";
+    ASSERT_LE(line.size(), ParserStage::kDefaultMaxLineLength);
+    EXPECT_EQ(feed(line), 1u);
+}
+
+TEST_F(ParserStageTest, CommentLineIsNotARecordAndNotAnError) {
+    EXPECT_EQ(feed("# a comment"), 0u);
+    EXPECT_EQ(feed("   # indented comment"), 0u);
+    EXPECT_EQ(stage.parsedCount(), 0u);
 }
 
 TEST_F(ParserStageTest, EscapedQuoteInsideUserAgentIsAccepted) {
@@ -159,23 +215,14 @@ TEST_F(ParserStageTest, EscapedQuoteInsideUserAgentIsAccepted) {
     EXPECT_EQ(out.items[0].userAgent(), R"(Bot \"v2\")");
 }
 
-TEST_F(ParserStageTest, CountsParsedAndMalformedLinesAcrossCalls) {
+TEST_F(ParserStageTest, KeepsWorkingAfterARejectedLine) {
     feed(kValidLine);
-    feed("");
+    rejected("");
     feed(kValidLine);
-    feed("garbage");
+    rejected("garbage");
     feed(kValidLine);
     EXPECT_EQ(stage.parsedCount(), 3u);
-    EXPECT_EQ(stage.malformedCount(), 2u);
     EXPECT_EQ(out.items.size(), 3u);
-}
-
-TEST_F(ParserStageTest, CloseReportsMalformedCount) {
-    feed(kValidLine);
-    feed("garbage");
-    feed("");
-    stage.close();
-    EXPECT_EQ(report.str(), "Malformed lines skipped: 2\n");
 }
 
 }  // namespace

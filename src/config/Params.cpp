@@ -39,6 +39,18 @@ std::vector<std::string> Params::requireList(const std::string& key) const {
     return *value.list;
 }
 
+std::optional<long long> Params::optionalInteger(const std::string& key, long long min, long long max) const {
+    const std::optional<std::string> text = optionalString(key);
+    if (!text) return std::nullopt;
+    const std::string range = std::to_string(min) + " to " + std::to_string(max);
+    if (text->empty() || text->size() > 18 || text->find_first_not_of("0123456789") != std::string::npos) {
+        fail(key, "parameter '" + key + "' must be a whole number from " + range + ".");
+    }
+    const long long value = std::stoll(*text);
+    if (value < min || value > max) fail(key, "parameter '" + key + "' must be from " + range + ".");
+    return value;
+}
+
 void Params::fail(const std::string& key, const std::string& message) const {
     const auto it = values_.find(key);
     const int line = it != values_.end() ? it->second.line : line_;

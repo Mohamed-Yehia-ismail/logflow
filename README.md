@@ -3,12 +3,16 @@
 LogFlow is a small log-processing system built as a **pipeline** of components:
 a *source* produces records, *stages* transform or filter them, and a *sink* consumes them.
 
-Current version: **Increment 4: Configuration-Driven Composition and the Stage Registry**
-(tag `v4`). The pipeline is now described in a YAML file. A new pipeline needs a new
-configuration file, not a new build.
+Current version: **Increment 5: Error Handling, Validation and the Dead-Letter Channel**
+(tag `v5`). Bad records no longer disappear silently: each stage has an error policy
+(`FAIL_FAST`, `SKIP`, `DEAD_LETTER`, `RETRY(n)`), failed records can go to a separate
+dead-letter sink, a validation stage checks records against rules from the
+configuration, and every run ends with a summary whose counts must add up.
 
 ```
-configs/error-report.yaml ──> PipelineLoader ──> StageRegistry ──> Pipeline ──> run
+source ──> parse ──> validate ──> ... ──> sink
+             │          │
+             └──────────┴──> dead-letter sink
 ```
 
 ## Requirements
@@ -45,6 +49,55 @@ different outputs:
 
 The configuration format is documented in [ARCHITECTURE.md](ARCHITECTURE.md#configuration-schema).
 
+### Corrupted input (Increment 5)
+
+`data/access-dirty.log` is a deliberately corrupted log: truncated lines, a negative byte
+count, timestamps from 1970 and 2099, bytes that are not UTF-8 and a 100 KiB line.
+`data/access-empty.log` is empty. The same file with three error policies:
+
+```bash
+./logflow --config configs/dirty-dead-letter.yaml   # valid -> out/dirty-valid.txt, bad -> out/dead-letter.txt
+./logflow --config configs/dirty-skip.yaml          # bad records dropped and counted
+./logflow --config configs/dirty-fail-fast.yaml     # stops at the first bad record
+./logflow --config configs/empty-input.yaml         # empty file: 0 records, no crash
+```
+
+Every run ends with a summary (on stderr):
+
+```
+Run summary: dirty-dead-letter
+  records read           11
+  stage       policy            in    out  filtered  skipped  dead-letter
+  1. parse    DEAD_LETTER      11      6         1        0            4
+  2. validate DEAD_LETTER       6      3         0        0            3
+  records written         3
+  dead-lettered           7
+  elapsed           4.335 ms
+  check: 11 read = 3 written + 1 dropped + 7 dead-lettered  OK
+```
+
+Error policies and validation rules are configured per stage:
+
+```yaml
+stages:
+  - type: parse
+    onError: DEAD_LETTER           # FAIL_FAST, SKIP (default), DEAD_LETTER or RETRY(n)
+  - type: validate
+    params:
+      required: [clientIp, method, path]
+      status: 100..599
+      bytes: 0..
+      timestamp: 2000-01-01T00:00:00Z..2030-12-31T23:59:59Z
+      clientIp: ip                 # ipv4, ipv6 or ip
+    onError: DEAD_LETTER
+deadLetter:                        # next to 'sink'
+  type: file
+  params: { path: out/dead-letter.txt }
+```
+
+Which policy handles which error in the corrupted file is listed in
+[ARCHITECTURE.md](ARCHITECTURE.md#chaos-test-every-error-in-the-corrupted-file-and-the-policy-that-handles-it).
+
 ### With command-line options (Increment 3)
 
 ```
@@ -64,7 +117,7 @@ pipeline.
 | Code | Meaning |
 |-----:|---------|
 | 0 | success |
-| 1 | run-time error (for example, the output file cannot be written) |
+| 1 | the run stopped (`PipelineException`: unreadable input, output cannot be written, or a stage failed under `FAIL_FAST`) |
 | 2 | invalid command line |
 | 3 | invalid configuration |
 
@@ -78,7 +131,7 @@ configurations below are in `tests/fixtures/configs/`.
 
 ```
 $ ./logflow --config tests/fixtures/configs/unknown-stage.yaml
-logflow: configuration error: tests/fixtures/configs/unknown-stage.yaml:8: stage 2 (filtr): unknown stage type 'filtr'. Known stage types: filter, parse, project. Did you mean 'filter'?
+logflow: configuration error: tests/fixtures/configs/unknown-stage.yaml:8: stage 2 (filtr): unknown stage type 'filtr'. Known stage types: filter, parse, project, validate. Did you mean 'filter'?
 ```
 
 **Missing parameter**
@@ -112,9 +165,12 @@ logflow: configuration error: tests/fixtures/configs/filter-before-parse.yaml:7:
 Other configuration errors reported the same way:
 
 ```
-unknown key 'stage' in 'pipeline' (allowed: name, source, stages, sink).
+unknown key 'stage' in 'pipeline' (allowed: name, source, stages, sink, deadLetter).
 'pipeline' is missing the required key 'source'.
-unknown parameter 'strict'. Expected parameters: format.
+unknown parameter 'strict'. Expected parameters: format, maxLineLength.
+unknown error policy 'IGNORE' (use FAIL_FAST, SKIP, DEAD_LETTER or RETRY(n) with n from 1 to 10).
+onError DEAD_LETTER needs a dead-letter sink, but the pipeline has none. Add for example ...
+'100' is not a range. Write min..max, for example 100..599.
 parameter 'fields' must be a list, for example fields: [a, b].
 operator '>' is not supported for text field 'path' (use ==, !=, startsWith, endsWith, contains).
 unknown field 'password' (use timestamp, clientIp, method, path, status, bytes or userAgent).
@@ -136,26 +192,30 @@ make clean        # removes build/ and out/
 
 ## Tests
 
-96 tests in `tests/`, written with GoogleTest:
+144 tests in `tests/`, written with GoogleTest:
 
 | Suite                      | Tests | What it covers |
 |----------------------------|------:|----------------|
-| `PipelineLoaderTest`       | 13 | **valid configuration, unknown stage type, missing parameter, wrong parameter type, empty pipeline**, impossible order, unknown keys and types, invalid values, invalid YAML, nothing written on error |
+| `ChaosTest`                |  4 | **the corrupted and the empty file** with `DEAD_LETTER`, `SKIP` and `FAIL_FAST`: valid records reach the main sink, each bad record is accounted for, counts balance |
+| `PipelineTest`             | 21 | stage order, lifecycle, **every error policy**, dead-letter routing, retries, summary counts |
+| `ValidationStageTest`      |  8 | required fields, numeric ranges, timestamp range, IP format, all broken rules reported |
+| `ErrorPolicyTest`          |  4 | policy names, `RETRY(n)` |
+| `RunSummaryTest`           |  5 | counts, balance check, printed table |
+| `PipelineLoaderTest`       | 21 | valid configuration, unknown stage type, missing parameter, wrong parameter type, empty pipeline, impossible order, `onError`, `deadLetter`, `validate` parameters |
 | `StageRegistryTest`        |  5 | built-in entries, item types, duplicates, a new stage type usable without loader changes |
-| `ConfigFilesTest`          |  3 | the three configurations in `configs/` and their outputs |
+| `ConfigFilesTest`          |  3 | the three report configurations in `configs/` and their outputs |
 | `CompareTest`              |  4 | `field op value` filters on numbers, times and text |
-| `ParserStageTest`          | 15 | CLF parsing |
+| `ParserStageTest`          | 20 | CLF parsing, the reason for each rejected line, UTF-8, line-length limit, comments |
 | `PredicateFilterStageTest` |  7 | filtering |
 | `ProjectionStageTest`      |  5 | projection |
 | `FileSinkTest`             |  6 | file output and `close()` |
-| `PipelineTest`             |  8 | stage order, lifecycle, failures |
 | `PipelineBuilderTest`      |  2 | fluent assembly |
 | `CommandLineTest`          |  5 | options, `--config` |
 | `IntegrationTest`          |  4 | fixture through full pipelines, from options and from YAML |
 | `TimestampTest`            |  8 | time parsing |
 | `LogRecordTest`            |  4 | the record |
 | `ConsoleSinkTest`          |  3 | console output |
-| `LineFormatTest`           |  2 | output format |
+| `LineFormatTest`           |  3 | output format, dead-letter lines |
 | `FileLineSourceTest`       |  2 | file input |
 
 ## Coverage
@@ -163,10 +223,10 @@ make clean        # removes build/ and out/
 Measured with `make coverage` (clang source-based coverage, `llvm-cov`) over the library
 sources in `include/` and `src/`:
 
-| Metric            | v2     | v3     | v4 |
-|-------------------|--------|--------|----|
-| **Line coverage** | 99.66% | 99.81% | **99.89%** (935 of 936 lines) |
-| Function coverage | 98.46% | 100.00% | 100.00% (175 of 175 functions) |
+| Metric            | v2     | v3     | v4     | v5 |
+|-------------------|--------|--------|--------|----|
+| **Line coverage** | 99.66% | 99.81% | 99.89% | **99.87%** (1487 of 1489 lines) |
+| Function coverage | 98.46% | 100.00% | 100.00% | 100.00% (232 of 232 functions) |
 
 ## Project layout
 
@@ -174,13 +234,13 @@ sources in `include/` and `src/`:
 logflow/
 ├── logflow                         launcher script
 ├── Makefile  CMakeLists.txt  CHANGELOG.md  README.md  ARCHITECTURE.md
-├── configs/                        error-report.yaml, api-traffic.yaml, bandwidth-by-client.yaml
-├── data/access-small.log           sample access log
+├── configs/                        report configurations, dirty-*.yaml, empty-input.yaml
+├── data/                           access-small.log, access-dirty.log, access-empty.log
 ├── include/logflow/
-│   ├── core/                       interfaces, Pipeline, PipelineBuilder
+│   ├── core/                       interfaces, Pipeline, PipelineBuilder, errors, RunSummary
 │   ├── config/                     StageRegistry, PipelineLoader, Params, BuiltinComponents
 │   ├── model/                      LogRecord, ProjectedRecord
-│   ├── stages/                     ParserStage, PredicateFilterStage, Predicates, ProjectionStage
+│   ├── stages/                     ParserStage, ValidationStage, PredicateFilterStage, Predicates, ProjectionStage
 │   ├── io/                         FileLineSource, ConsoleSink, FileSink
 │   ├── app/                        command line and assembly
 │   └── util/                       timestamps
@@ -198,3 +258,4 @@ logflow/
 | `v2` | 2: Typed Records and the First Real Filter |
 | `v3` | 3: Composition: Filtering, Projection and the Pipeline Builder |
 | `v4` | 4: Configuration-Driven Composition and the Stage Registry |
+| `v5` | 5: Error Handling, Validation and the Dead-Letter Channel |

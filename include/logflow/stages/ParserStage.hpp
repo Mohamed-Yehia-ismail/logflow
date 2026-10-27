@@ -1,8 +1,6 @@
 #pragma once
 
 #include <cstddef>
-#include <iostream>
-#include <optional>
 #include <string>
 
 #include "logflow/core/Stage.hpp"
@@ -17,26 +15,30 @@ namespace logflow {
 // The Combined Log Format extension ("referer" "user-agent" at the end) is also
 // accepted. The referer, when present, is stored in the "referer" attribute.
 //
-// Malformed lines are skipped and counted; nothing is emitted for them. When the
-// stage is closed, it writes the count to the report stream. Proper handling of
-// malformed lines (reporting what is wrong, routing them elsewhere) comes in a
-// later increment; this increment deliberately only skips and counts them.
+// A line that cannot be parsed throws StageException with the reason (truncated
+// line, invalid timestamp, not UTF-8, too long, ...). The stage does not decide what
+// happens to that line: the pipeline applies the stage's error policy.
+//
+// Comment lines (starting with '#') are not records: they are dropped without error.
+//
+// The parser checks syntax only. A byte count of -45 is a well-formed number, so it is
+// parsed; whether it is acceptable is decided by ValidationStage.
 class ParserStage : public Stage<std::string, LogRecord> {
 public:
-    explicit ParserStage(std::ostream& report = std::cerr);
+    static constexpr std::size_t kDefaultMaxLineLength = 8 * 1024;
+
+    // Lines longer than `maxLineLength` bytes are rejected before they are parsed.
+    explicit ParserStage(std::size_t maxLineLength = kDefaultMaxLineLength);
 
     void process(const std::string& line, Emitter<LogRecord>& out) override;
-    void close() override;
 
     std::size_t parsedCount() const { return parsed_; }
-    std::size_t malformedCount() const { return malformed_; }
 
 private:
-    static std::optional<LogRecord> parse(const std::string& line);
+    LogRecord parse(const std::string& line) const;
 
-    std::ostream& report_;
+    std::size_t maxLineLength_;
     std::size_t parsed_ = 0;
-    std::size_t malformed_ = 0;
 };
 
 }  // namespace logflow

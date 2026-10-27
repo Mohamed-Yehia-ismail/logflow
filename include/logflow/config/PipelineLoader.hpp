@@ -20,9 +20,14 @@ struct LoadedPipeline {
 //     source: { type: file, params: { path: data/access-small.log } }
 //     stages:
 //       - type: parse
+//         onError: DEAD_LETTER
 //       - type: filter
 //         params: { field: status, op: ">=", value: 400 }
 //     sink: { type: file, params: { path: out/errors.txt } }
+//     deadLetter: { type: file, params: { path: out/dead-letter.txt } }
+//
+// onError (FAIL_FAST, SKIP, DEAD_LETTER, RETRY(n)) is optional and defaults to SKIP.
+// deadLetter is optional, but required when a stage uses DEAD_LETTER or RETRY(n).
 //
 // Loading happens in three steps, all before any data is read:
 //   1. read:     the YAML is parsed and checked against the schema

@@ -79,7 +79,7 @@ TEST_F(PipelineLoaderTest, UnknownStageTypeIsRejectedWithASuggestion) {
     const std::string error = errorOf(config("    - type: parse\n    - type: filtr\n"));
     EXPECT_EQ(error,
               "test.yaml:8: stage 2 (filtr): unknown stage type 'filtr'. "
-              "Known stage types: filter, parse, project. Did you mean 'filter'?");
+              "Known stage types: filter, parse, project, validate. Did you mean 'filter'?");
 }
 
 // 3. Missing parameter
@@ -141,11 +141,11 @@ TEST_F(PipelineLoaderTest, UnknownSourceSinkAndKeysAreRejected) {
                       " } }\n  stages: [ { type: parse } ]\n  sink: { type: printer }\n"),
               "test.yaml:4: sink (printer): unknown sink type 'printer'. Known sink types: console, file.");
     EXPECT_EQ(errorOf("pipeline:\n  stage: []\n"),
-              "test.yaml:2: unknown key 'stage' in 'pipeline' (allowed: name, source, stages, sink).");
+              "test.yaml:2: unknown key 'stage' in 'pipeline' (allowed: name, source, stages, sink, deadLetter).");
     EXPECT_EQ(errorOf("pipelines: {}\n"),
               "test.yaml:1: unknown key 'pipelines' in the configuration (allowed: pipeline).");
     EXPECT_EQ(errorOf(config("    - type: parse\n      params: { format: clf, strict: yes }\n")),
-              "test.yaml:8: stage 1 (parse): unknown parameter 'strict'. Expected parameters: format.");
+              "test.yaml:8: stage 1 (parse): unknown parameter 'strict'. Expected parameters: format, maxLineLength.");
 }
 
 TEST_F(PipelineLoaderTest, MissingRequiredKeysAreRejected) {
@@ -189,6 +189,98 @@ TEST_F(PipelineLoaderTest, ErrorsAreFoundBeforeAnyDataIsWritten) {
     // The sink is valid, but a later problem must stop loading before the output file exists.
     errorOf(config("    - type: parse\n    - type: filtr\n"));
     EXPECT_FALSE(fs::exists(out));
+}
+
+// ---- error policies, dead-letter sink and validation (Increment 5) ----
+
+TEST_F(PipelineLoaderTest, ErrorPolicyAndDeadLetterSinkAreConfigured) {
+    const fs::path deadLetter = fs::temp_directory_path() / "logflow-loader-dead-letter.txt";
+    LoadedPipeline loaded = loader.loadString(
+        config("    - type: parse\n"
+               "      onError: dead_letter\n"
+               "    - type: validate\n"
+               "      params: { status: 100..599 }\n"
+               "      onError: RETRY(2)\n") +
+        "  deadLetter:\n"
+        "    type: file\n"
+        "    params: { path: " + deadLetter.string() + " }\n");
+    const RunSummary summary = loaded.pipeline.run();
+
+    EXPECT_EQ(summary.pipelineName, "test");
+    EXPECT_EQ(summary.stages[0].name, "parse");
+    EXPECT_EQ(summary.stages[0].policy, "DEAD_LETTER");
+    EXPECT_EQ(summary.stages[1].policy, "RETRY(2)");
+    EXPECT_EQ(summary.stages[0].deadLettered, 1u);  // the malformed fixture line
+    EXPECT_NE(readFile(deadLetter).find("stage=parse"), std::string::npos);
+    fs::remove(deadLetter);
+}
+
+TEST_F(PipelineLoaderTest, DefaultErrorPolicyIsSkip) {
+    LoadedPipeline loaded = loader.loadString(config("    - type: parse\n"));
+    EXPECT_EQ(loaded.pipeline.run().stages[0].policy, "SKIP");
+}
+
+TEST_F(PipelineLoaderTest, UnknownErrorPolicyIsReportedAtItsLine) {
+    EXPECT_EQ(errorOf(config("    - type: parse\n"
+                             "      onError: IGNORE\n")),
+              "test.yaml:8: stage 1 (parse): unknown error policy 'IGNORE' "
+              "(use FAIL_FAST, SKIP, DEAD_LETTER or RETRY(n) with n from 1 to 10).");
+}
+
+TEST_F(PipelineLoaderTest, DeadLetterPolicyWithoutDeadLetterSinkIsRejected) {
+    const std::string message = errorOf(config("    - type: parse\n"
+                                               "      onError: DEAD_LETTER\n"));
+    EXPECT_EQ(message.rfind("test.yaml:8: stage 1 (parse): onError DEAD_LETTER needs a dead-letter sink", 0), 0u)
+        << message;
+}
+
+TEST_F(PipelineLoaderTest, DeadLetterSinkMustAcceptFailedRecords) {
+    const std::string base = config("    - type: parse\n      onError: DEAD_LETTER\n");
+    EXPECT_EQ(errorOf(base + "  deadLetter: { type: database }\n").find("unknown sink type 'database'") ==
+                  std::string::npos,
+              false);
+    EXPECT_EQ(errorOf(base + "  deadLetter: { type: file, params: { path: x.txt, mode: append } }\n")
+                  .find("unknown parameter 'mode'") == std::string::npos,
+              false);
+}
+
+TEST_F(PipelineLoaderTest, OnErrorIsOnlyAllowedOnStages) {
+    const std::string yaml = "pipeline:\n"
+                             "  source: { type: file, params: { path: " + kFixture + " }, onError: SKIP }\n"
+                             "  stages: [ { type: parse } ]\n"
+                             "  sink: { type: console }\n";
+    EXPECT_NE(errorOf(yaml).find("unknown key 'onError' in source"), std::string::npos) << errorOf(yaml);
+    EXPECT_NE(errorOf(config("    - type: parse\n      onError: [SKIP]\n")).find("'onError' must be a policy name"),
+              std::string::npos);
+}
+
+TEST_F(PipelineLoaderTest, ValidateStageParametersAreChecked) {
+    const auto validate = [this](const std::string& params) {
+        return errorOf(config("    - type: parse\n    - type: validate\n      params: { " + params + " }\n"));
+    };
+    EXPECT_EQ(validate("required: [clientIp, path], status: 100..599, bytes: 0.., clientIp: ipv4, "
+                       "timestamp: 2000-01-01T00:00:00Z..2030-12-31T23:59:59Z"),
+              "");
+    EXPECT_NE(validate("status: 100").find("'100' is not a range"), std::string::npos);
+    EXPECT_NE(validate("status: ..").find("is not a range"), std::string::npos);
+    EXPECT_NE(validate("bytes: a..b").find("'a' is not a whole number"), std::string::npos);
+    EXPECT_NE(validate("status: 600..100").find("minimum is larger"), std::string::npos);
+    EXPECT_NE(validate("timestamp: yesterday..").find("'yesterday' is not a time"), std::string::npos);
+    EXPECT_NE(validate("timestamp: 2030-01-01T00:00:00Z..2000-01-01T00:00:00Z").find("start is later"),
+              std::string::npos);
+    EXPECT_NE(validate("clientIp: mac").find("unknown address format 'mac'"), std::string::npos);
+    EXPECT_NE(validate("required: [status]").find("cannot be required"), std::string::npos);
+    EXPECT_NE(validate("color: red").find("unknown parameter 'color'"), std::string::npos);
+    EXPECT_NE(errorOf(config("    - type: parse\n    - type: validate\n")).find("no validation rules"),
+              std::string::npos);
+}
+
+TEST_F(PipelineLoaderTest, MaxLineLengthIsChecked) {
+    EXPECT_EQ(errorOf(config("    - type: parse\n      params: { maxLineLength: 4096 }\n")), "");
+    EXPECT_NE(errorOf(config("    - type: parse\n      params: { maxLineLength: big }\n")).find("whole number"),
+              std::string::npos);
+    EXPECT_NE(errorOf(config("    - type: parse\n      params: { maxLineLength: 10 }\n")).find("must be from 64"),
+              std::string::npos);
 }
 
 }  // namespace

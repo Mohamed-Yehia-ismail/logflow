@@ -31,12 +31,14 @@ Pipeline assemblePipeline(const Options& options) {
         const StageRegistry registry = builtinRegistry();
         return PipelineLoader(registry).loadFile(*options.config).pipeline;
     }
+    // Without a configuration file, malformed lines are skipped (and counted in the
+    // run summary), as in earlier increments.
 
     auto step = PipelineBuilder::from(std::make_unique<FileLineSource>(options.input))
-                    .via(std::make_unique<ParserStage>());
+                    .via(std::make_unique<ParserStage>(), {"parse", ErrorPolicy::skip()});
 
     const auto filter = [&step](predicates::Predicate predicate) {
-        step = std::move(step).via(std::make_unique<PredicateFilterStage<>>(std::move(predicate)));
+        step = std::move(step).via(std::make_unique<PredicateFilterStage<>>(std::move(predicate)), {"filter"});
     };
     if (options.since || options.until) {
         filter(predicates::timeBetween(options.since.value_or(Timestamp::min()),
@@ -46,7 +48,7 @@ Pipeline assemblePipeline(const Options& options) {
     if (options.pathPrefix) filter(predicates::pathPrefix(*options.pathPrefix));
 
     if (options.fields) {
-        return finish(std::move(step).via(std::make_unique<ProjectionStage>(*options.fields)), options);
+        return finish(std::move(step).via(std::make_unique<ProjectionStage>(*options.fields), {"project"}), options);
     }
     return finish(std::move(step), options);
 }
